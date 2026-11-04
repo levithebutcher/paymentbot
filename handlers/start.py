@@ -56,6 +56,19 @@ async def handle_cancel(message: Message, state: FSMContext):
         await message.answer("ℹ️ There is no active order in progress.", reply_markup=get_main_menu_keyboard())
         return
 
+    data = await state.get_data()
+    qr_msg_id = data.get("qr_msg_id")
+    if qr_msg_id:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=qr_msg_id)
+        except Exception:
+            pass
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
     await state.clear()
     await message.answer(
         "❌ **Order cancelled.** You can start a fresh order anytime from the menu.",

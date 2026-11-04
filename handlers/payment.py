@@ -70,11 +70,18 @@ async def handle_buy_service(query: CallbackQuery, state: FSMContext, bot: Bot):
     )
 
     cancel_kb = get_cancel_order_keyboard(order_id)
+    sent_msg = None
+
+    # Delete previous service detail message to keep chat history clean
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
 
     if os.path.exists(qr_path):
         try:
             photo = FSInputFile(qr_path)
-            await query.message.answer_photo(
+            sent_msg = await query.message.answer_photo(
                 photo=photo,
                 caption=caption,
                 reply_markup=cancel_kb,
@@ -82,22 +89,32 @@ async def handle_buy_service(query: CallbackQuery, state: FSMContext, bot: Bot):
             )
         except Exception as e:
             print(f"Error sending QR photo: {e}")
-            await query.message.answer(caption, reply_markup=cancel_kb, parse_mode="Markdown")
+            sent_msg = await query.message.answer(caption, reply_markup=cancel_kb, parse_mode="Markdown")
     else:
         # Fallback if QR image is not yet placed in assets
-        await query.message.answer(
+        sent_msg = await query.message.answer(
             f"⚠️ QR Image not found at `{qr_path}`.\n\n" + caption,
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
 
+    if sent_msg:
+        await state.update_data(qr_msg_id=sent_msg.message_id)
+
 @payment_router.callback_query(F.data.startswith("cancel_order:"))
 async def handle_cancel_order(query: CallbackQuery, state: FSMContext):
     await state.clear()
     await query.answer("Order cancelled.")
+    # Delete the payment QR message completely
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
     await query.message.answer(
-        "❌ Order has been cancelled. You can browse our services anytime.",
-        reply_markup=get_main_menu_keyboard()
+        "❌ **Order cancelled.** You can browse our services anytime.",
+        reply_markup=get_main_menu_keyboard(),
+        parse_mode="Markdown"
     )
 
 @payment_router.message(OrderFlow.waiting_for_screenshot, F.photo)
@@ -150,6 +167,7 @@ async def handle_utr_submission(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     order_id = data.get("order_id")
     screenshot_file_id = data.get("screenshot_file_id")
+    qr_msg_id = data.get("qr_msg_id")
 
     if not order_id or not screenshot_file_id:
         await state.clear()
@@ -162,6 +180,17 @@ async def handle_utr_submission(message: Message, state: FSMContext, bot: Bot):
             "⚠️ This UTR has just been used by another transaction. Please check your reference number and try again."
         )
         return
+
+    # Remove the Cancel button from the QR code message since payment is submitted
+    if qr_msg_id:
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=message.chat.id,
+                message_id=qr_msg_id,
+                reply_markup=None
+            )
+        except Exception:
+            pass
 
     # Clear user state
     await state.clear()

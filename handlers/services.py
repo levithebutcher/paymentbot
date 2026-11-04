@@ -22,8 +22,12 @@ async def show_services_catalog(event: Message | CallbackQuery):
 
     if isinstance(event, CallbackQuery):
         await event.answer()
-        # If the callback came from a photo message, send a new message instead of edit_text
+        # If the callback came from a photo message, delete the photo and send clean catalog
         if event.message.photo:
+            try:
+                await event.message.delete()
+            except Exception:
+                pass
             await event.message.answer(text, reply_markup=kb, parse_mode="Markdown")
         else:
             await event.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -49,6 +53,10 @@ async def handle_select_service(query: CallbackQuery):
 
     kb = get_service_detail_keyboard(service_id)
     if query.message.photo:
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         await query.message.answer(text, reply_markup=kb, parse_mode="Markdown")
     else:
         await query.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
