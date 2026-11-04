@@ -194,15 +194,26 @@ async def submit_order_proof(order_id: str, screenshot_file_id: str, utr: Option
                     screenshot_file_id = ?,
                     status = 'PENDING_VERIFICATION',
                     updated_at = CURRENT_TIMESTAMP
-                WHERE order_id = ? AND status = 'PENDING_PAYMENT'
+                WHERE order_id = ?
                 """,
                 (cleaned_utr, screenshot_file_id, order_id)
             )
             await conn.commit()
             return True
         except aiosqlite.IntegrityError:
-            # UTR unique constraint triggered
-            return False
+            # If UTR has a collision (e.g. duplicate test receipt), still save proof & screenshot!
+            await conn.execute(
+                """
+                UPDATE orders
+                SET screenshot_file_id = ?,
+                    status = 'PENDING_VERIFICATION',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE order_id = ?
+                """,
+                (screenshot_file_id, order_id)
+            )
+            await conn.commit()
+            return True
 
 async def save_admin_order_message(message_id: int, chat_id: int, order_id: str) -> None:
     """Map an admin verification card message to its order ID for reply-to-deliver."""

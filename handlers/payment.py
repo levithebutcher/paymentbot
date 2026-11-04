@@ -1,12 +1,14 @@
 import os
 import uuid
 import re
+import html
 from datetime import datetime
 from PIL import Image
 import winocr
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
+from aiogram.exceptions import TelegramBadRequest
 from config import config
 from database import (
     get_service,
@@ -211,27 +213,48 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
     # 6. Forward Verification Card to Admin:
     # (Send to Admin Group if configured, AND to all Admin DMs so you NEVER miss a payment!)
     if amount_found:
-        ocr_badge = f"✅ **MATCHED**: ₹{price:.0f} detected in receipt image"
+        ocr_badge = f"✅ <b>MATCHED</b>: ₹{price:.0f} detected in receipt image"
+        plain_badge = f"✅ MATCHED: ₹{price:.0f} detected in receipt image"
     else:
-        ocr_badge = f"⚠️ **CAUTION**: ₹{price:.0f} not clearly detected in OCR scan (Please verify receipt visually)"
+        ocr_badge = f"⚠️ <b>CAUTION</b>: ₹{price:.0f} not clearly detected in OCR scan (Please verify receipt visually)"
+        plain_badge = f"⚠️ CAUTION: ₹{price:.0f} not clearly detected in OCR scan (Please verify receipt visually)"
 
     username_str = f"@{user.username}" if user.username else "No username"
-    utr_info = f"`{extracted_utr}` (auto-scanned)" if extracted_utr else "*(Not detected in scan)*"
-    
-    admin_caption = (
-        "🔔 **NEW PAYMENT VERIFICATION REQUEST**\n"
+    safe_name = html.escape(user.full_name or "Anonymous")
+    safe_username = html.escape(username_str)
+    safe_service = html.escape(service_title)
+    safe_utr = html.escape(extracted_utr) if extracted_utr else "Not detected in scan"
+
+    admin_caption_html = (
+        "🔔 <b>NEW PAYMENT VERIFICATION REQUEST</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🧾 **Order ID:** `#{order_id}`\n"
-        f"👤 **Customer:** {user.full_name} ({username_str})\n"
-        f"🆔 **Customer ID:** `{user.id}`\n"
-        f"📌 **Service:** {service_title}\n"
-        f"💰 **Order Amount:** `₹{price:.0f}`\n"
-        f"🔢 **UTR / Ref:** {utr_info}\n\n"
-        f"🔍 **Auto-Scan:** {ocr_badge}\n"
-        f"🕒 **Submitted:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"🧾 <b>Order ID:</b> <code>#{order_id}</code>\n"
+        f"👤 <b>Customer:</b> {safe_name} ({safe_username})\n"
+        f"🆔 <b>Customer ID:</b> <code>{user.id}</code>\n"
+        f"📌 <b>Service:</b> {safe_service}\n"
+        f"💰 <b>Order Amount:</b> <code>₹{price:.0f}</code>\n"
+        f"🔢 <b>UTR / Ref:</b> <code>{safe_utr}</code>\n\n"
+        f"🔍 <b>Auto-Scan:</b> {ocr_badge}\n"
+        f"🕒 <b>Submitted:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "👉 *Action:* Tap **Approve** to deliver default service link, OR **Reply to this message** with any custom file/link/message to deliver it directly to this customer!"
+        "👉 <i>Action:</i> Tap <b>Approve</b> to deliver default service link, OR <b>Reply to this message</b> with any custom file/link/message to deliver it directly to this customer!"
     )
+
+    admin_caption_plain = (
+        "🔔 NEW PAYMENT VERIFICATION REQUEST\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🧾 Order ID: #{order_id}\n"
+        f"👤 Customer: {user.full_name} ({username_str})\n"
+        f"🆔 Customer ID: {user.id}\n"
+        f"📌 Service: {service_title}\n"
+        f"💰 Order Amount: ₹{price:.0f}\n"
+        f"🔢 UTR / Ref: {extracted_utr or 'Not detected'}\n\n"
+        f"🔍 Auto-Scan: {plain_badge}\n"
+        f"🕒 Submitted: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "👉 Action: Tap Approve or Reply to this message with a file to deliver!"
+    )
+
     admin_kb = get_admin_verification_keyboard(order_id)
 
     # Collect all destinations: Admin Group + all Admin DMs
@@ -246,12 +269,24 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
             sent = await bot.send_photo(
                 chat_id=dest_id,
                 photo=photo_file_id,
-                caption=admin_caption,
+                caption=admin_caption_html,
                 reply_markup=admin_kb,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
             # Save mapping so if admin replies to this card with a file, bot delivers to the exact user!
             await save_admin_order_message(sent.message_id, dest_id, order_id)
+        except TelegramBadRequest as e:
+            print(f"TelegramBadRequest sending HTML to {dest_id}: {e}. Retrying with plain text fallback...")
+            try:
+                sent = await bot.send_photo(
+                    chat_id=dest_id,
+                    photo=photo_file_id,
+                    caption=admin_caption_plain,
+                    reply_markup=admin_kb
+                )
+                await save_admin_order_message(sent.message_id, dest_id, order_id)
+            except Exception as e2:
+                print(f"Failed fallback sending to {dest_id}: {e2}")
         except Exception as e:
             print(f"Error forwarding payment verification to {dest_id}: {e}")
 

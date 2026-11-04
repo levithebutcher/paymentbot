@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import html
 from datetime import datetime
 from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, Message
@@ -75,14 +76,15 @@ async def handle_admin_approve(query: CallbackQuery, bot: Bot):
     await query.answer("✅ Order approved successfully!")
 
     admin_name = f"@{admin.username}" if admin.username else admin.full_name
+    safe_admin_name = html.escape(admin_name)
     approved_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     current_caption = query.message.caption or ""
     status_block = (
         f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ **STATUS: APPROVED**\n"
-        f"👮 **Verified by:** {admin_name} (`{admin.id}`)\n"
-        f"🕒 **Time:** {approved_time}"
+        f"✅ <b>STATUS: APPROVED</b>\n"
+        f"👮 <b>Verified by:</b> {safe_admin_name} (<code>{admin.id}</code>)\n"
+        f"🕒 <b>Time:</b> {approved_time}"
     )
     max_orig_len = 1020 - len(status_block)
     if len(current_caption) > max_orig_len:
@@ -93,10 +95,23 @@ async def handle_admin_approve(query: CallbackQuery, bot: Bot):
         await query.message.edit_caption(
             caption=new_caption,
             reply_markup=None,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     except Exception as e:
-        print(f"Could not edit admin message caption: {e}")
+        print(f"Could not edit admin message caption with HTML: {e}. Retrying plain text...")
+        try:
+            plain_status = (
+                f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ STATUS: APPROVED\n"
+                f"👮 Verified by: {admin_name} ({admin.id})\n"
+                f"🕒 Time: {approved_time}"
+            )
+            await query.message.edit_caption(
+                caption=(query.message.caption or "")[:800] + plain_status,
+                reply_markup=None
+            )
+        except Exception as e2:
+            print(f"Fallback caption edit failed: {e2}")
 
     # Deliver service to the user
     user_id = order["user_id"]
@@ -141,15 +156,17 @@ async def handle_admin_direct_reject(query: CallbackQuery, bot: Bot):
     await query.answer("❌ Order rejected.")
 
     admin_name = f"@{admin.username}" if admin.username else admin.full_name
+    safe_admin_name = html.escape(admin_name)
+    safe_reason = html.escape(reason_text)
     rejected_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     current_caption = query.message.caption or ""
     status_block = (
         f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"❌ **STATUS: REJECTED**\n"
-        f"👮 **Reviewed by:** {admin_name}\n"
-        f"⚠️ **Reason:** {reason_text}\n"
-        f"🕒 **Time:** {rejected_time}"
+        f"❌ <b>STATUS: REJECTED</b>\n"
+        f"👮 <b>Reviewed by:</b> {safe_admin_name}\n"
+        f"⚠️ <b>Reason:</b> {safe_reason}\n"
+        f"🕒 <b>Time:</b> {rejected_time}"
     )
     max_orig_len = 1020 - len(status_block)
     if len(current_caption) > max_orig_len:
@@ -160,10 +177,24 @@ async def handle_admin_direct_reject(query: CallbackQuery, bot: Bot):
         await query.message.edit_caption(
             caption=new_caption,
             reply_markup=None,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     except Exception as e:
-        print(f"Could not edit admin message caption: {e}")
+        print(f"Could not edit admin message caption with HTML: {e}. Retrying plain text...")
+        try:
+            plain_status = (
+                f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"❌ STATUS: REJECTED\n"
+                f"👮 Reviewed by: {admin_name}\n"
+                f"⚠️ Reason: {reason_text}\n"
+                f"🕒 Time: {rejected_time}"
+            )
+            await query.message.edit_caption(
+                caption=(query.message.caption or "")[:800] + plain_status,
+                reply_markup=None
+            )
+        except Exception as e2:
+            print(f"Fallback caption edit failed: {e2}")
 
     user_id = order["user_id"]
     user_rejection_text = (
@@ -223,15 +254,17 @@ async def handle_admin_reject_reason(query: CallbackQuery, bot: Bot):
     await query.answer("❌ Order marked as Rejected.")
 
     admin_name = f"@{admin.username}" if admin.username else admin.full_name
+    safe_admin_name = html.escape(admin_name)
+    safe_reason = html.escape(reason_text)
     rejected_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     current_caption = query.message.caption or ""
     status_block = (
         f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"❌ **STATUS: REJECTED**\n"
-        f"👮 **Reviewed by:** {admin_name}\n"
-        f"⚠️ **Reason:** {reason_text}\n"
-        f"🕒 **Time:** {rejected_time}"
+        f"❌ <b>STATUS: REJECTED</b>\n"
+        f"👮 <b>Reviewed by:</b> {safe_admin_name}\n"
+        f"⚠️ <b>Reason:</b> {safe_reason}\n"
+        f"🕒 <b>Time:</b> {rejected_time}"
     )
     max_orig_len = 1020 - len(status_block)
     if len(current_caption) > max_orig_len:
@@ -242,10 +275,24 @@ async def handle_admin_reject_reason(query: CallbackQuery, bot: Bot):
         await query.message.edit_caption(
             caption=new_caption,
             reply_markup=None,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     except Exception as e:
-        print(f"Could not edit admin message caption: {e}")
+        print(f"Could not edit admin message caption with HTML: {e}. Retrying plain text...")
+        try:
+            plain_status = (
+                f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"❌ STATUS: REJECTED\n"
+                f"👮 Reviewed by: {admin_name}\n"
+                f"⚠️ Reason: {reason_text}\n"
+                f"🕒 Time: {rejected_time}"
+            )
+            await query.message.edit_caption(
+                caption=(query.message.caption or "")[:800] + plain_status,
+                reply_markup=None
+            )
+        except Exception as e2:
+            print(f"Fallback caption edit failed: {e2}")
 
     user_id = order["user_id"]
     user_rejection_text = (
@@ -303,7 +350,10 @@ async def handle_admin_reply_delivery(message: Message, bot: Bot):
     )
 
     try:
-        await bot.send_message(chat_id=user_id, text=intro, parse_mode="Markdown")
+        try:
+            await bot.send_message(chat_id=user_id, text=intro, parse_mode="Markdown")
+        except Exception:
+            await bot.send_message(chat_id=user_id, text=intro)
         # Copy the exact admin message (Document, Photo, Audio, Video, or Text) directly to the buyer!
         await message.copy_to(chat_id=user_id)
     except Exception as e:
@@ -314,15 +364,18 @@ async def handle_admin_reply_delivery(message: Message, bot: Bot):
     await approve_order(order_id, message.from_user.id)
 
     admin_name = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
-    await message.reply(
+    reply_confirm = (
         f"✅ **Delivered successfully to customer!**\n\n"
         f"👤 Customer: {order['full_name']} (@{order['username']})\n"
         f"🆔 Customer ID: `{user_id}`\n"
         f"🧾 Order ID: `#{order_id}`\n"
         f"👮 Verified by: {admin_name}\n\n"
-        "Order status updated to **COMPLETED**.",
-        parse_mode="Markdown"
+        "Order status updated to **COMPLETED**."
     )
+    try:
+        await message.reply(reply_confirm, parse_mode="Markdown")
+    except Exception:
+        await message.reply(reply_confirm)
 
 # ==========================================
 # 2. INTERACTIVE ADMIN DASHBOARD & NAVIGATION
