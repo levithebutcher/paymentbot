@@ -5,7 +5,7 @@ def get_admin_verification_keyboard(order_id: str) -> InlineKeyboardMarkup:
     buttons = [
         [
             InlineKeyboardButton(text="✅ Approve", callback_data=f"admin_approve:{order_id}"),
-            InlineKeyboardButton(text="❌ Reject", callback_data=f"admin_reject_menu:{order_id}")
+            InlineKeyboardButton(text="❌ Reject", callback_data=f"admin_reject:{order_id}")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)

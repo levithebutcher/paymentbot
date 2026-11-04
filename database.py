@@ -237,7 +237,7 @@ async def approve_order(order_id: str, admin_id: int) -> Optional[Dict[str, Any]
             SET status = 'COMPLETED',
                 admin_id = ?,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE order_id = ? AND status = 'PENDING_VERIFICATION'
+            WHERE order_id = ?
             """,
             (admin_id, order_id)
         )
@@ -254,7 +254,7 @@ async def reject_order(order_id: str, admin_id: int, reason: str) -> Optional[Di
                 admin_id = ?,
                 rejection_reason = ?,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE order_id = ? AND status = 'PENDING_VERIFICATION'
+            WHERE order_id = ?
             """,
             (admin_id, reason, order_id)
         )

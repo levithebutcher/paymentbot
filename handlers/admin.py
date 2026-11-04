@@ -78,13 +78,16 @@ async def handle_admin_approve(query: CallbackQuery, bot: Bot):
     approved_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     current_caption = query.message.caption or ""
-    new_caption = (
-        current_caption
-        + f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
+    status_block = (
+        f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
         f"✅ **STATUS: APPROVED**\n"
         f"👮 **Verified by:** {admin_name} (`{admin.id}`)\n"
         f"🕒 **Time:** {approved_time}"
     )
+    max_orig_len = 1020 - len(status_block)
+    if len(current_caption) > max_orig_len:
+        current_caption = current_caption[:max_orig_len] + "..."
+    new_caption = current_caption + status_block
 
     try:
         await query.message.edit_caption(
@@ -119,16 +122,78 @@ async def handle_admin_approve(query: CallbackQuery, bot: Bot):
     except Exception as e:
         print(f"Could not deliver service to user {user_id}: {e}")
 
+@admin_router.callback_query(F.data.startswith("admin_reject:"))
+async def handle_admin_direct_reject(query: CallbackQuery, bot: Bot):
+    order_id = query.data.split(":")[1]
+    admin = query.from_user
+
+    order = await get_order(order_id)
+    if not order:
+        await query.answer("⚠️ Order not found.", show_alert=True)
+        return
+
+    if order["status"] == "REJECTED":
+        await query.answer("ℹ️ Order is already rejected.", show_alert=True)
+        return
+
+    reason_text = "Payment proof could not be verified by Admin"
+    await reject_order(order_id, admin.id, reason_text)
+    await query.answer("❌ Order rejected.")
+
+    admin_name = f"@{admin.username}" if admin.username else admin.full_name
+    rejected_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    current_caption = query.message.caption or ""
+    status_block = (
+        f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"❌ **STATUS: REJECTED**\n"
+        f"👮 **Reviewed by:** {admin_name}\n"
+        f"⚠️ **Reason:** {reason_text}\n"
+        f"🕒 **Time:** {rejected_time}"
+    )
+    max_orig_len = 1020 - len(status_block)
+    if len(current_caption) > max_orig_len:
+        current_caption = current_caption[:max_orig_len] + "..."
+    new_caption = current_caption + status_block
+
+    try:
+        await query.message.edit_caption(
+            caption=new_caption,
+            reply_markup=None,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        print(f"Could not edit admin message caption: {e}")
+
+    user_id = order["user_id"]
+    user_rejection_text = (
+        "❌ **PAYMENT VERIFICATION FAILED**\n\n"
+        f"🧾 **Order ID:** `#{order_id}`\n"
+        f"📌 **Service:** {order['service_title']}\n\n"
+        f"⚠️ **Reason for rejection:**\n_{reason_text}_\n\n"
+        "💡 *What to do next?*\n"
+        "• Please verify in your bank/UPI app that the money was actually debited.\n"
+        "• Ensure you uploaded a clear, uncropped screenshot with visible amount.\n"
+        "• You can try ordering again or contact support for help."
+    )
+
+    retry_kb = get_retry_keyboard(order["service_id"])
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=user_rejection_text,
+            reply_markup=retry_kb,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        print(f"Could not send rejection message to user {user_id}: {e}")
+
 @admin_router.callback_query(F.data.startswith("admin_reject_menu:"))
 async def handle_admin_reject_menu(query: CallbackQuery):
     order_id = query.data.split(":")[1]
     order = await get_order(order_id)
     if not order:
         await query.answer("⚠️ Order not found.", show_alert=True)
-        return
-
-    if order["status"] != "PENDING_VERIFICATION":
-        await query.answer(f"ℹ️ Order is already {order['status']}.", show_alert=True)
         return
 
     await query.answer()
@@ -152,10 +217,6 @@ async def handle_admin_reject_reason(query: CallbackQuery, bot: Bot):
         await query.answer("⚠️ Order not found.", show_alert=True)
         return
 
-    if order["status"] != "PENDING_VERIFICATION":
-        await query.answer(f"ℹ️ Order is already {order['status']}.", show_alert=True)
-        return
-
     reason_text = REJECTION_REASONS.get(reason_code, "Payment proof could not be verified")
     await reject_order(order_id, admin.id, reason_text)
 
@@ -165,14 +226,17 @@ async def handle_admin_reject_reason(query: CallbackQuery, bot: Bot):
     rejected_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     current_caption = query.message.caption or ""
-    new_caption = (
-        current_caption
-        + f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
+    status_block = (
+        f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
         f"❌ **STATUS: REJECTED**\n"
         f"👮 **Reviewed by:** {admin_name}\n"
         f"⚠️ **Reason:** {reason_text}\n"
         f"🕒 **Time:** {rejected_time}"
     )
+    max_orig_len = 1020 - len(status_block)
+    if len(current_caption) > max_orig_len:
+        current_caption = current_caption[:max_orig_len] + "..."
+    new_caption = current_caption + status_block
 
     try:
         await query.message.edit_caption(

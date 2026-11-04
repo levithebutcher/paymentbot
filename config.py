@@ -19,7 +19,7 @@ class Config:
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
     ADMIN_GROUP_ID: int = int(os.getenv("ADMIN_GROUP_ID", "0"))
     ADMIN_IDS: List[int] = field(default_factory=lambda: [
-        int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()
+        int(x.strip()) for x in os.getenv("ADMIN_IDS", "6934393623").split(",") if x.strip().isdigit()
     ])
     UPI_ID: str = os.getenv("UPI_ID", "merchant@upi")
     UPI_NAME: str = os.getenv("UPI_NAME", "Store Merchant")
