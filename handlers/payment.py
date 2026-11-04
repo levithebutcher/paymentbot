@@ -2,11 +2,20 @@ import os
 import uuid
 import re
 from datetime import datetime
+from PIL import Image
+import winocr
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from config import config
-from database import get_service, create_order, check_utr_exists, submit_order_proof, get_order, get_setting
+from database import (
+    get_service,
+    create_order,
+    submit_order_proof,
+    get_order,
+    get_setting,
+    save_admin_order_message
+)
 from states.order_states import OrderFlow
 from keyboards.user_keyboards import get_cancel_order_keyboard, get_main_menu_keyboard
 from keyboards.admin_keyboards import get_admin_verification_keyboard
@@ -118,70 +127,56 @@ async def handle_cancel_order(query: CallbackQuery, state: FSMContext):
     )
 
 @payment_router.message(OrderFlow.waiting_for_screenshot, F.photo)
-async def handle_screenshot_upload(message: Message, state: FSMContext):
-    # Highest resolution photo
+async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot):
+    user = message.from_user
     photo_file_id = message.photo[-1].file_id
-    await state.update_data(screenshot_file_id=photo_file_id)
-    await state.set_state(OrderFlow.waiting_for_utr)
-
-    await message.reply(
-        "📸 **Screenshot received!**\n\n"
-        "Now, please enter the **12-digit UPI Reference / UTR Number** from your payment receipt.\n\n"
-        "*(Example: `432109876543`)*\n"
-        "This helps us verify your transaction instantly with our bank ledger.",
-        parse_mode="Markdown"
-    )
-
-@payment_router.message(OrderFlow.waiting_for_screenshot)
-async def handle_invalid_screenshot_message(message: Message):
-    await message.reply(
-        "⚠️ **Please upload a screenshot image (photo) of your payment.**\n\n"
-        "If you want to abort this order, type /cancel."
-    )
-
-@payment_router.message(OrderFlow.waiting_for_utr, F.text)
-async def handle_utr_submission(message: Message, state: FSMContext, bot: Bot):
-    raw_utr = message.text.strip().replace(" ", "").replace("-", "")
-
-    # Basic regex validation: UPI UTRs are typically 12 numeric digits
-    if not re.match(r"^[0-9A-Za-z]{8,18}$", raw_utr):
-        await message.reply(
-            "⚠️ **Invalid UTR / Reference Number format.**\n\n"
-            "A standard UPI UTR is usually a 12-digit number (e.g., `432109876543`).\n"
-            "Please check your GPay / PhonePe / Paytm receipt and re-enter the correct reference number:"
-        )
-        return
-
-    # Anti-Fraud check: Check if UTR is already in database
-    is_duplicate = await check_utr_exists(raw_utr)
-    if is_duplicate:
-        await message.reply(
-            "🚨 **DUPLICATE / REUSED UTR DETECTED!**\n\n"
-            f"The Transaction ID `{raw_utr}` has already been registered for a previous order.\n"
-            "Submitting reused or false receipts is strictly prohibited.\n\n"
-            "Please enter the genuine 12-digit UTR from your bank app, or type /cancel to abort.",
-            parse_mode="Markdown"
-        )
-        return
 
     data = await state.get_data()
     order_id = data.get("order_id")
-    screenshot_file_id = data.get("screenshot_file_id")
+    price = data.get("price", 0.0)
     qr_msg_id = data.get("qr_msg_id")
 
-    if not order_id or not screenshot_file_id:
+    if not order_id:
         await state.clear()
-        await message.reply("⚠️ Session expired. Please start your order again using /services.")
+        await message.reply("⚠️ Order session expired. Please start again from /services.")
         return
 
-    success = await submit_order_proof(order_id, raw_utr, screenshot_file_id)
-    if not success:
-        await message.reply(
-            "⚠️ This UTR has just been used by another transaction. Please check your reference number and try again."
-        )
-        return
+    # 1. Download image for automated OCR scan (verifying amount on receipt)
+    upload_dir = "assets/user_uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+    temp_img_path = os.path.join(upload_dir, f"{order_id}.jpg")
+    await bot.download(message.photo[-1], destination=temp_img_path)
 
-    # Remove the Cancel button from the QR code message since payment is submitted
+    ocr_text = ""
+    amount_found = False
+    extracted_utr = None
+    try:
+        img = Image.open(temp_img_path)
+        res = await winocr.recognize_pil(img, lang="en")
+        ocr_text = res.text or ""
+
+        # Check if expected amount (e.g. 199, 199.00) is visible in the text
+        price_int = int(price)
+        if str(price_int) in ocr_text or f"{price:.2f}" in ocr_text or f"{price:.0f}" in ocr_text:
+            amount_found = True
+
+        # Try to find a UTR-like 10-14 digit sequence in OCR
+        utr_match = re.search(r"\b\d{10,14}\b", ocr_text)
+        if utr_match:
+            extracted_utr = utr_match.group(0)
+    except Exception as e:
+        print(f"OCR Scan error: {e}")
+    finally:
+        if os.path.exists(temp_img_path):
+            try:
+                os.remove(temp_img_path)
+            except Exception:
+                pass
+
+    # 2. Update Database: mark order as PENDING_VERIFICATION
+    await submit_order_proof(order_id=order_id, screenshot_file_id=photo_file_id, utr=extracted_utr)
+
+    # 3. Clean up the user's QR code card (remove cancel button)
     if qr_msg_id:
         try:
             await bot.edit_message_reply_markup(
@@ -192,54 +187,77 @@ async def handle_utr_submission(message: Message, state: FSMContext, bot: Bot):
         except Exception:
             pass
 
-    # Clear user state
+    # 4. Clear user's FSM state
     await state.clear()
 
-    # Confirm to User
+    # 5. Send warm confirmation message to USER (no manual UTR prompt!)
     order_info = await get_order(order_id)
-    service_title = order_info["service_title"] if order_info else "Service"
-    amount = order_info["amount"] if order_info else data.get("price", 0)
+    service_title = order_info["service_title"] if order_info else "Selected Service"
 
-    user_confirmation_text = (
-        "⏳ **Payment Proof Submitted for Verification!**\n\n"
+    user_receipt_text = (
+        "🙏 **Payment Screenshot Received! Thank You!**\n\n"
         f"🧾 **Order ID:** `#{order_id}`\n"
+        f"👤 **Customer ID:** `{user.id}`\n"
         f"📌 **Service:** {service_title}\n"
-        f"💰 **Amount:** ₹{amount:.0f}\n"
-        f"🔢 **UTR Number:** `{raw_utr}`\n\n"
-        "Our team has received your submission. We are verifying it against our bank ledger.\n"
-        "⚡ You will receive an instant notification here once it is verified and activated!\n\n"
-        "Thank you for your patience! 🙏"
+        f"💰 **Amount:** ₹{price:.0f}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "⏳ **Kripya thoda patience rakhein.**\n"
+        "Hamari admin team bank account me payment verify kar rahi hai.\n"
+        "Jaise hi verification complete hoga, aapka order / access aapko **yahin bot me turant automatically deliver** kar diya jayega! 🚀\n"
+        "━━━━━━━━━━━━━━━━━━━━"
     )
-    await message.reply(user_confirmation_text, reply_markup=get_main_menu_keyboard(), parse_mode="Markdown")
+    await message.reply(user_receipt_text, reply_markup=get_main_menu_keyboard(), parse_mode="Markdown")
 
-    # Forward to Admin Group
-    admin_group_id = config.ADMIN_GROUP_ID
-    if admin_group_id and admin_group_id != 0:
-        user = message.from_user
-        username_str = f"@{user.username}" if user.username else "No username"
-        admin_caption = (
-            "🔔 **NEW PAYMENT VERIFICATION REQUEST**\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"🧾 **Order ID:** `#{order_id}`\n"
-            f"👤 **Customer:** {user.full_name} ({username_str})\n"
-            f"🆔 **Telegram ID:** `{user.id}`\n"
-            f"📌 **Service:** {service_title}\n"
-            f"💰 **Amount:** `₹{amount:.0f}`\n"
-            f"🔢 **UTR Number:** `{raw_utr}`\n"
-            f"🕒 **Submitted:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "👉 *Please check your UPI/Bank app for this UTR and exact amount before approving.*"
-        )
-        admin_kb = get_admin_verification_keyboard(order_id)
+    # 6. Forward Verification Card to Admin:
+    # (Send to Admin Group if configured, AND to all Admin DMs so you NEVER miss a payment!)
+    if amount_found:
+        ocr_badge = f"✅ **MATCHED**: ₹{price:.0f} detected in receipt image"
+    else:
+        ocr_badge = f"⚠️ **CAUTION**: ₹{price:.0f} not clearly detected in OCR scan (Please verify receipt visually)"
 
+    username_str = f"@{user.username}" if user.username else "No username"
+    utr_info = f"`{extracted_utr}` (auto-scanned)" if extracted_utr else "*(Not detected in scan)*"
+    
+    admin_caption = (
+        "🔔 **NEW PAYMENT VERIFICATION REQUEST**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🧾 **Order ID:** `#{order_id}`\n"
+        f"👤 **Customer:** {user.full_name} ({username_str})\n"
+        f"🆔 **Customer ID:** `{user.id}`\n"
+        f"📌 **Service:** {service_title}\n"
+        f"💰 **Order Amount:** `₹{price:.0f}`\n"
+        f"🔢 **UTR / Ref:** {utr_info}\n\n"
+        f"🔍 **Auto-Scan:** {ocr_badge}\n"
+        f"🕒 **Submitted:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "👉 *Action:* Tap **Approve** to deliver default service link, OR **Reply to this message** with any custom file/link/message to deliver it directly to this customer!"
+    )
+    admin_kb = get_admin_verification_keyboard(order_id)
+
+    # Collect all destinations: Admin Group + all Admin DMs
+    destinations = set()
+    if config.ADMIN_GROUP_ID and config.ADMIN_GROUP_ID != 0:
+        destinations.add(config.ADMIN_GROUP_ID)
+    for admin_id in config.ADMIN_IDS:
+        destinations.add(admin_id)
+
+    for dest_id in destinations:
         try:
-            await bot.send_photo(
-                chat_id=admin_group_id,
-                photo=screenshot_file_id,
+            sent = await bot.send_photo(
+                chat_id=dest_id,
+                photo=photo_file_id,
                 caption=admin_caption,
                 reply_markup=admin_kb,
                 parse_mode="Markdown"
             )
+            # Save mapping so if admin replies to this card with a file, bot delivers to the exact user!
+            await save_admin_order_message(sent.message_id, dest_id, order_id)
         except Exception as e:
-            # If bot cannot send to admin group (e.g. wrong group ID or not added as admin)
-            print(f"Error forwarding payment verification to admin group {admin_group_id}: {e}")
+            print(f"Error forwarding payment verification to {dest_id}: {e}")
+
+@payment_router.message(OrderFlow.waiting_for_screenshot)
+async def handle_invalid_screenshot_message(message: Message):
+    await message.reply(
+        "⚠️ **Please upload a screenshot image (photo) of your payment.**\n\n"
+        "If you want to abort this order, click Cancel Order above or type /cancel."
+    )

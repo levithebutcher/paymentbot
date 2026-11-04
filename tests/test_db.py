@@ -48,7 +48,7 @@ class TestPaymentBotDatabase(unittest.IsolatedAsyncioTestCase):
         utr_1 = "123456789012"
         self.assertFalse(await self.db.check_utr_exists(utr_1))
         
-        success = await self.db.submit_order_proof(order_id_1, utr_1, "file_photo_1")
+        success = await self.db.submit_order_proof(order_id_1, "file_photo_1", utr=utr_1)
         self.assertTrue(success)
         
         # Now UTR must be marked as existing
@@ -67,7 +67,7 @@ class TestPaymentBotDatabase(unittest.IsolatedAsyncioTestCase):
         await self.db.upsert_user(user_id, "buyer2", "Buyer 2")
         order_id = "ORD-APPROVE"
         await self.db.create_order(order_id, user_id, "vip_access", 199.0)
-        await self.db.submit_order_proof(order_id, "987654321098", "screenshot_123")
+        await self.db.submit_order_proof(order_id, "screenshot_123", utr="987654321098")
 
         # Admin approves
         admin_id = 55555
@@ -82,7 +82,7 @@ class TestPaymentBotDatabase(unittest.IsolatedAsyncioTestCase):
         await self.db.upsert_user(user_id, "buyer3", "Buyer 3")
         order_id = "ORD-REJECT"
         await self.db.create_order(order_id, user_id, "vip_access", 199.0)
-        await self.db.submit_order_proof(order_id, "555555555555", "screenshot_fake")
+        await self.db.submit_order_proof(order_id, "screenshot_fake", utr="555555555555")
 
         # Admin rejects
         admin_id = 55555
@@ -166,6 +166,24 @@ class TestPaymentBotDatabase(unittest.IsolatedAsyncioTestCase):
         # Fallback default
         val = await self.db.get_setting("non_existent_key", default="fallback")
         self.assertEqual(val, "fallback")
+
+    async def test_order_message_mapping(self):
+        user_id = 991122
+        await self.db.upsert_user(user_id, "replybuyer", "Reply Buyer")
+        order_id = "ORD-REPLY01"
+        await self.db.create_order(order_id, user_id, "vip_access", 199.0)
+        await self.db.submit_order_proof(order_id, "photo_xyz")
+
+        # Map admin card message
+        admin_msg_id = 8844
+        admin_chat_id = -100123456
+        await self.db.save_admin_order_message(admin_msg_id, admin_chat_id, order_id)
+
+        # Retrieve order
+        matched_order = await self.db.get_order_by_message(admin_msg_id, admin_chat_id)
+        self.assertIsNotNone(matched_order)
+        self.assertEqual(matched_order["order_id"], order_id)
+        self.assertEqual(matched_order["user_id"], user_id)
 
 if __name__ == "__main__":
     unittest.main()

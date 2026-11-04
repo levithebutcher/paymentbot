@@ -24,7 +24,8 @@ from database import (
     get_all_users,
     get_connection,
     get_setting,
-    set_setting
+    set_setting,
+    get_order_by_message
 )
 from states.order_states import AddServiceFlow, EditServiceFlow, BroadcastFlow, EditPaymentFlow
 from keyboards.admin_keyboards import (
@@ -204,6 +205,60 @@ async def handle_admin_reject_reason(query: CallbackQuery, bot: Bot):
         )
     except Exception as e:
         print(f"Could not send rejection message to user {user_id}: {e}")
+
+@admin_router.message(F.reply_to_message)
+async def handle_admin_reply_delivery(message: Message, bot: Bot):
+    """
+    Allows Admin to reply to any order verification card with a file, document, photo,
+    or message, and the bot automatically delivers it directly to the buyer's Telegram chat!
+    """
+    if not is_admin_authorized(message.from_user.id):
+        return
+
+    replied_msg_id = message.reply_to_message.message_id
+    chat_id = message.chat.id
+    order = await get_order_by_message(replied_msg_id, chat_id)
+    if not order:
+        return  # The replied message is not an active order card
+
+    if order["status"] == "COMPLETED":
+        await message.reply("ℹ️ This order is already marked as COMPLETED.")
+        return
+
+    user_id = order["user_id"]
+    order_id = order["order_id"]
+
+    intro = (
+        "🎉 **PAYMENT VERIFIED & ORDER DELIVERED!**\n\n"
+        f"🧾 **Order ID:** `#{order_id}`\n"
+        f"📌 **Service:** {order['service_title']}\n"
+        f"💰 **Amount Paid:** ₹{order['amount']:.0f}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🎁 **Here is your delivery file / access content from our admin:**\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    )
+
+    try:
+        await bot.send_message(chat_id=user_id, text=intro, parse_mode="Markdown")
+        # Copy the exact admin message (Document, Photo, Audio, Video, or Text) directly to the buyer!
+        await message.copy_to(chat_id=user_id)
+    except Exception as e:
+        await message.reply(f"⚠️ Could not deliver message to user {user_id}: {e}")
+        return
+
+    # Mark order as completed
+    await approve_order(order_id, message.from_user.id)
+
+    admin_name = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+    await message.reply(
+        f"✅ **Delivered successfully to customer!**\n\n"
+        f"👤 Customer: {order['full_name']} (@{order['username']})\n"
+        f"🆔 Customer ID: `{user_id}`\n"
+        f"🧾 Order ID: `#{order_id}`\n"
+        f"👮 Verified by: {admin_name}\n\n"
+        "Order status updated to **COMPLETED**.",
+        parse_mode="Markdown"
+    )
 
 # ==========================================
 # 2. INTERACTIVE ADMIN DASHBOARD & NAVIGATION

@@ -61,6 +61,13 @@ async def init_db() -> None:
             key TEXT PRIMARY KEY,
             value TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS order_messages (
+            message_id INTEGER,
+            chat_id INTEGER,
+            order_id TEXT,
+            PRIMARY KEY(message_id, chat_id)
+        );
         """)
 
         # Seed initial payment settings if not present
@@ -173,12 +180,11 @@ async def check_utr_exists(utr: str) -> bool:
             row = await cursor.fetchone()
             return row is not None
 
-async def submit_order_proof(order_id: str, utr: str, screenshot_file_id: str) -> bool:
+async def submit_order_proof(order_id: str, screenshot_file_id: str, utr: Optional[str] = None) -> bool:
     """
-    Attach UTR and screenshot to order, transition status to PENDING_VERIFICATION.
-    Returns False if UTR already exists due to race condition.
+    Attach screenshot (and optional UTR) to order, transition status to PENDING_VERIFICATION.
     """
-    cleaned_utr = utr.strip()
+    cleaned_utr = utr.strip() if utr else None
     async with get_connection() as conn:
         try:
             await conn.execute(
@@ -197,6 +203,30 @@ async def submit_order_proof(order_id: str, utr: str, screenshot_file_id: str) -
         except aiosqlite.IntegrityError:
             # UTR unique constraint triggered
             return False
+
+async def save_admin_order_message(message_id: int, chat_id: int, order_id: str) -> None:
+    """Map an admin verification card message to its order ID for reply-to-deliver."""
+    async with get_connection() as conn:
+        await conn.execute(
+            """
+            INSERT OR REPLACE INTO order_messages (message_id, chat_id, order_id)
+            VALUES (?, ?, ?)
+            """,
+            (message_id, chat_id, order_id)
+        )
+        await conn.commit()
+
+async def get_order_by_message(message_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieve the order associated with an admin card message."""
+    async with get_connection() as conn:
+        async with conn.execute(
+            "SELECT order_id FROM order_messages WHERE message_id = ? AND chat_id = ?",
+            (message_id, chat_id)
+        ) as cur:
+            row = await cur.fetchone()
+            if row:
+                return await get_order(row["order_id"])
+            return None
 
 async def approve_order(order_id: str, admin_id: int) -> Optional[Dict[str, Any]]:
     """Marks order as COMPLETED and returns order info with delivery content."""
