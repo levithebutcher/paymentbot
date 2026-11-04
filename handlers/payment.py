@@ -28,7 +28,14 @@ async def handle_buy_service(query: CallbackQuery, state: FSMContext, bot: Bot):
 
     order_id = generate_order_id()
     user = query.from_user
-    await create_order(order_id, user.id, service_id, service["price_inr"])
+    await create_order(
+        order_id=order_id,
+        user_id=user.id,
+        service_id=service_id,
+        amount=service["price_inr"],
+        username=user.username,
+        full_name=user.full_name
+    )
 
     # Store order info in FSM state
     await state.set_state(OrderFlow.waiting_for_screenshot)
@@ -37,6 +44,16 @@ async def handle_buy_service(query: CallbackQuery, state: FSMContext, bot: Bot):
     upi_id = await get_setting("upi_id", config.UPI_ID)
     upi_name = await get_setting("upi_name", config.UPI_NAME)
     qr_path = await get_setting("qr_image_path", config.QR_IMAGE_PATH)
+
+    if not os.path.isabs(qr_path):
+        qr_path = os.path.abspath(qr_path)
+
+    # Fallback to default assets/qr_code.png if specified path does not exist
+    if not os.path.exists(qr_path):
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        fallback_qr = os.path.join(base_dir, "assets", "qr_code.png")
+        if os.path.exists(fallback_qr):
+            qr_path = fallback_qr
 
     caption = (
         f"🧾 **Order Generated:** `#{order_id}`\n\n"
@@ -55,13 +72,17 @@ async def handle_buy_service(query: CallbackQuery, state: FSMContext, bot: Bot):
     cancel_kb = get_cancel_order_keyboard(order_id)
 
     if os.path.exists(qr_path):
-        photo = FSInputFile(qr_path)
-        await query.message.answer_photo(
-            photo=photo,
-            caption=caption,
-            reply_markup=cancel_kb,
-            parse_mode="Markdown"
-        )
+        try:
+            photo = FSInputFile(qr_path)
+            await query.message.answer_photo(
+                photo=photo,
+                caption=caption,
+                reply_markup=cancel_kb,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            print(f"Error sending QR photo: {e}")
+            await query.message.answer(caption, reply_markup=cancel_kb, parse_mode="Markdown")
     else:
         # Fallback if QR image is not yet placed in assets
         await query.message.answer(

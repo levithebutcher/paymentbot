@@ -118,8 +118,26 @@ async def get_service(service_id: str) -> Optional[Dict[str, Any]]:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
-async def create_order(order_id: str, user_id: int, service_id: str, amount: float) -> None:
+async def create_order(
+    order_id: str,
+    user_id: int,
+    service_id: str,
+    amount: float,
+    username: Optional[str] = None,
+    full_name: Optional[str] = None
+) -> None:
     async with get_connection() as conn:
+        # Ensure user exists in users table to satisfy FOREIGN KEY constraint
+        await conn.execute(
+            """
+            INSERT INTO users (user_id, username, full_name)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = COALESCE(NULLIF(excluded.username, ''), users.username),
+                full_name = COALESCE(NULLIF(excluded.full_name, ''), users.full_name)
+            """,
+            (user_id, username or "", full_name or "")
+        )
         await conn.execute(
             """
             INSERT INTO orders (order_id, user_id, service_id, amount, status)
