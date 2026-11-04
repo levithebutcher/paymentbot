@@ -8,6 +8,8 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
+import os
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from config import config
@@ -24,6 +26,27 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("payment_bot")
+
+async def start_healthcheck_server():
+    """Starts a lightweight HTTP server if running on cloud platforms like Render that require an open PORT."""
+    port_str = os.getenv("PORT")
+    if not port_str:
+        return None
+    try:
+        port = int(port_str)
+        app = web.Application()
+        async def health(request):
+            return web.Response(text="Payment Bot is healthy and running!")
+        app.router.add_get("/", health)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logger.info(f"Render healthcheck HTTP server running on port {port}")
+        return runner
+    except Exception as e:
+        logger.warning(f"Could not start healthcheck server on port {port_str}: {e}")
+        return None
 
 async def main():
     if not config.BOT_TOKEN or config.BOT_TOKEN.startswith("123456789:ABC"):
@@ -58,10 +81,14 @@ async def main():
     logger.info(f"Admin Group ID configured: {config.ADMIN_GROUP_ID}")
     logger.info(f"Configured UPI ID: {config.UPI_ID}")
 
+    health_runner = await start_healthcheck_server()
+
     try:
         # Start long polling
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        if health_runner:
+            await health_runner.cleanup()
         await bot.session.close()
 
 if __name__ == "__main__":
