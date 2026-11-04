@@ -153,5 +153,19 @@ class TestPaymentBotDatabase(unittest.IsolatedAsyncioTestCase):
         self.assertIn(1003, all_users)
         self.assertGreaterEqual(len(all_users), 3)
 
+    async def test_settings_get_set(self):
+        # Default seeded value
+        upi = await self.db.get_setting("upi_id")
+        self.assertEqual(upi, config.UPI_ID)
+
+        # Update setting
+        await self.db.set_setting("upi_id", "newtest@upi")
+        updated = await self.db.get_setting("upi_id")
+        self.assertEqual(updated, "newtest@upi")
+
+        # Fallback default
+        val = await self.db.get_setting("non_existent_key", default="fallback")
+        self.assertEqual(val, "fallback")
+
 if __name__ == "__main__":
     unittest.main()

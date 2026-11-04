@@ -19,3 +19,8 @@ class EditServiceFlow(StatesGroup):
 class BroadcastFlow(StatesGroup):
     waiting_for_content = State()
     waiting_for_confirmation = State()
+
+class EditPaymentFlow(StatesGroup):
+    waiting_for_upi_id = State()
+    waiting_for_qr_photo = State()
+    waiting_for_payee_name = State()

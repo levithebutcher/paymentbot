@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
+from PIL import Image, ImageOps
 from config import config
 from database import (
     approve_order,
@@ -21,13 +22,16 @@ from database import (
     toggle_service_status,
     delete_service,
     get_all_users,
-    get_connection
+    get_connection,
+    get_setting,
+    set_setting
 )
-from states.order_states import AddServiceFlow, EditServiceFlow, BroadcastFlow
+from states.order_states import AddServiceFlow, EditServiceFlow, BroadcastFlow, EditPaymentFlow
 from keyboards.admin_keyboards import (
     get_admin_verification_keyboard,
     get_admin_rejection_reasons_keyboard,
     get_admin_dashboard_keyboard,
+    get_payment_settings_keyboard,
     get_services_management_keyboard,
     get_service_actions_keyboard,
     get_broadcast_confirm_keyboard,
@@ -245,12 +249,14 @@ async def handle_admin_panel(message: Message, state: FSMContext):
         await message.reply("⛔ You are not authorized to access the admin panel.")
         return
 
+    upi_id = await get_setting("upi_id", config.UPI_ID)
     text = (
         "🛠️ **ADMIN CONTROL DASHBOARD**\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "Manage your services, change pricing or delivery content, "
-        "send broadcasts to all users, or view real-time revenue stats.\n\n"
-        "👇 **Select an action below:**"
+        f"📲 **Current Active UPI:** `{upi_id}`\n\n"
+        "👇 **Select an option to manage:**\n"
+        "1️⃣ **Payment Method & QR Code** — Change UPI ID or QR image\n"
+        "2️⃣ **Services Catalog** — Add/edit services, pricing & delivery links"
     )
     await message.reply(text, reply_markup=get_admin_dashboard_keyboard(), parse_mode="Markdown")
 
@@ -262,14 +268,163 @@ async def nav_dashboard(query: CallbackQuery, state: FSMContext):
         return
 
     await query.answer()
+    upi_id = await get_setting("upi_id", config.UPI_ID)
     text = (
         "🛠️ **ADMIN CONTROL DASHBOARD**\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "Manage your services, change pricing or delivery content, "
-        "send broadcasts to all users, or view real-time revenue stats.\n\n"
-        "👇 **Select an action below:**"
+        f"📲 **Current Active UPI:** `{upi_id}`\n\n"
+        "👇 **Select an option to manage:**\n"
+        "1️⃣ **Payment Method & QR Code** — Change UPI ID or QR image\n"
+        "2️⃣ **Services Catalog** — Add/edit services, pricing & delivery links"
     )
     await query.message.edit_text(text, reply_markup=get_admin_dashboard_keyboard(), parse_mode="Markdown")
+
+# ==========================================
+# PAYMENT SETTINGS MANAGEMENT (UPI & QR)
+# ==========================================
+
+@admin_router.callback_query(F.data == "admin_nav:payment_settings")
+async def nav_payment_settings(query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    if not is_admin_authorized(query.from_user.id):
+        await query.answer("⛔ Unauthorized", show_alert=True)
+        return
+
+    await query.answer()
+    upi_id = await get_setting("upi_id", config.UPI_ID)
+    upi_name = await get_setting("upi_name", config.UPI_NAME)
+    qr_path = await get_setting("qr_image_path", config.QR_IMAGE_PATH)
+    qr_exists = "✅ File Active" if os.path.exists(qr_path) else "⚠️ File Missing"
+
+    text = (
+        "💳 **PAYMENT METHODS & QR SETTINGS**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📲 **UPI ID:** `{upi_id}`\n"
+        f"👤 **Payee Name:** {upi_name}\n"
+        f"🖼️ **QR Image:** {qr_exists} (`{qr_path}`)\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Select what you want to update:"
+    )
+    await query.message.edit_text(text, reply_markup=get_payment_settings_keyboard(), parse_mode="Markdown")
+
+@admin_router.callback_query(F.data == "admin_pay:change_upi")
+async def start_change_upi(query: CallbackQuery, state: FSMContext):
+    if not is_admin_authorized(query.from_user.id):
+        await query.answer("⛔ Unauthorized", show_alert=True)
+        return
+
+    await state.set_state(EditPaymentFlow.waiting_for_upi_id)
+    await query.answer()
+    text = (
+        "🔄 **CHANGE UPI ID**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Please send the new UPI ID (e.g. `yourname@okhdfcbank` or `9876543210@upi`):"
+    )
+    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="Markdown")
+
+@admin_router.message(EditPaymentFlow.waiting_for_upi_id, F.text)
+async def finish_change_upi(message: Message, state: FSMContext):
+    new_upi = message.text.strip()
+    if "@" not in new_upi or len(new_upi) < 5:
+        await message.reply("⚠️ Invalid UPI ID format. It should look like `username@bank` or `number@upi`. Please try again:")
+        return
+
+    await set_setting("upi_id", new_upi)
+    config.UPI_ID = new_upi
+
+    # Persist to .env if present
+    try:
+        if os.path.exists(".env"):
+            with open(".env", "r", encoding="utf-8") as f:
+                env_text = f.read()
+            if "UPI_ID=" in env_text:
+                env_text = re.sub(r"UPI_ID=.*", f"UPI_ID={new_upi}", env_text)
+            else:
+                env_text += f"\nUPI_ID={new_upi}\n"
+            with open(".env", "w", encoding="utf-8") as f:
+                f.write(env_text)
+    except Exception as e:
+        print(f"Could not update .env with new UPI_ID: {e}")
+
+    await state.clear()
+    await message.reply(
+        f"✅ **UPI ID updated successfully!**\nNew UPI ID: `{new_upi}`\n\nAll future customer orders will now display this UPI ID.",
+        reply_markup=get_admin_dashboard_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@admin_router.callback_query(F.data == "admin_pay:change_name")
+async def start_change_name(query: CallbackQuery, state: FSMContext):
+    if not is_admin_authorized(query.from_user.id):
+        await query.answer("⛔ Unauthorized", show_alert=True)
+        return
+
+    await state.set_state(EditPaymentFlow.waiting_for_payee_name)
+    await query.answer()
+    text = (
+        "👤 **CHANGE PAYEE / MERCHANT NAME**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Please send the new Payee Name (e.g. `My Store` or `John Doe`):"
+    )
+    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="Markdown")
+
+@admin_router.message(EditPaymentFlow.waiting_for_payee_name, F.text)
+async def finish_change_name(message: Message, state: FSMContext):
+    new_name = message.text.strip()
+    await set_setting("upi_name", new_name)
+    config.UPI_NAME = new_name
+    await state.clear()
+    await message.reply(
+        f"✅ **Payee Name updated successfully!**\nNew Name: **{new_name}**",
+        reply_markup=get_admin_dashboard_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@admin_router.callback_query(F.data == "admin_pay:change_qr")
+async def start_change_qr(query: CallbackQuery, state: FSMContext):
+    if not is_admin_authorized(query.from_user.id):
+        await query.answer("⛔ Unauthorized", show_alert=True)
+        return
+
+    await state.set_state(EditPaymentFlow.waiting_for_qr_photo)
+    await query.answer()
+    text = (
+        "🖼️ **UPLOAD NEW QR CODE IMAGE**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Please send the new QR code image as a **photo** in this chat.\n\n"
+        "✨ *Note: The bot will automatically add clean white edge padding so no corners or edges get cut off on mobile screens.*"
+    )
+    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="Markdown")
+
+@admin_router.message(EditPaymentFlow.waiting_for_qr_photo, F.photo)
+async def finish_change_qr(message: Message, state: FSMContext, bot: Bot):
+    photo = message.photo[-1]
+    temp_path = "assets/qr_temp_download.png"
+    final_path = "assets/qr_code.png"
+
+    os.makedirs("assets", exist_ok=True)
+    await bot.download(photo, destination=temp_path)
+
+    try:
+        # Open and apply 60px edge padding to prevent Telegram corner cut-off
+        img = Image.open(temp_path).convert("RGB")
+        padded = ImageOps.expand(img, border=60, fill="white")
+        padded.save(final_path)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+        await set_setting("qr_image_path", final_path)
+        await state.clear()
+
+        await message.reply(
+            "✅ **QR Code image updated successfully!**\n\n"
+            "Clean edge padding has been applied to ensure clear scannability on all devices. "
+            "All new customer payment orders will now display this QR code image.",
+            reply_markup=get_admin_dashboard_keyboard(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await message.reply(f"⚠️ Failed to process image: {e}. Please try uploading again:")
 
 @admin_router.callback_query(F.data == "admin_nav:close")
 async def nav_close(query: CallbackQuery, state: FSMContext):

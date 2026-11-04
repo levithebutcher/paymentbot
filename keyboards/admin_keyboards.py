@@ -30,16 +30,27 @@ def get_admin_rejection_reasons_keyboard(order_id: str) -> InlineKeyboardMarkup:
 def get_admin_dashboard_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [
-            InlineKeyboardButton(text="📋 Manage Services", callback_data="admin_nav:services"),
-            InlineKeyboardButton(text="➕ Add Service", callback_data="admin_nav:add_service")
+            InlineKeyboardButton(text="💳 1. Change Payment Method / QR", callback_data="admin_nav:payment_settings")
         ],
         [
-            InlineKeyboardButton(text="📢 Broadcast Message", callback_data="admin_nav:broadcast"),
-            InlineKeyboardButton(text="📊 View Stats", callback_data="admin_nav:stats")
+            InlineKeyboardButton(text="📋 2. Manage Services Catalog", callback_data="admin_nav:services")
+        ],
+        [
+            InlineKeyboardButton(text="📢 Broadcast", callback_data="admin_nav:broadcast"),
+            InlineKeyboardButton(text="📊 Stats", callback_data="admin_nav:stats")
         ],
         [
             InlineKeyboardButton(text="❌ Close Menu", callback_data="admin_nav:close")
         ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_payment_settings_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="🔄 Change UPI ID", callback_data="admin_pay:change_upi")],
+        [InlineKeyboardButton(text="🖼️ Upload New QR Code Image", callback_data="admin_pay:change_qr")],
+        [InlineKeyboardButton(text="👤 Change Payee Name", callback_data="admin_pay:change_name")],
+        [InlineKeyboardButton(text="◀️ Back to Admin Menu", callback_data="admin_nav:dashboard")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

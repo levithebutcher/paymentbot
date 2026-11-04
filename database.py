@@ -56,7 +56,21 @@ async def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_orders_utr ON orders(utr);
         CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
         CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        );
         """)
+
+        # Seed initial payment settings if not present
+        default_settings = {
+            "upi_id": config.UPI_ID,
+            "upi_name": config.UPI_NAME,
+            "qr_image_path": config.QR_IMAGE_PATH
+        }
+        for k, v in default_settings.items():
+            await conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, str(v)))
 
         # Check if services table is empty; if so, populate with default services
         async with conn.execute("SELECT COUNT(*) as count FROM services") as cursor:
@@ -299,4 +313,26 @@ async def delete_service(service_id: str) -> bool:
         cursor = await conn.execute("DELETE FROM services WHERE service_id = ?", (service_id,))
         await conn.commit()
         return cursor.rowcount > 0
+
+async def get_setting(key: str, default: Optional[str] = None) -> str:
+    """Retrieve dynamic setting value (e.g. upi_id, upi_name, qr_image_path)."""
+    async with get_connection() as conn:
+        async with conn.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cur:
+            row = await cur.fetchone()
+            if row and row["value"]:
+                return row["value"]
+            return default or ""
+
+async def set_setting(key: str, value: str) -> None:
+    """Insert or update dynamic setting value."""
+    async with get_connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, str(value))
+        )
+        await conn.commit()
+
 

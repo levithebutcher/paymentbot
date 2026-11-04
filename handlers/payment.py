@@ -6,7 +6,7 @@ from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from config import config
-from database import get_service, create_order, check_utr_exists, submit_order_proof, get_order
+from database import get_service, create_order, check_utr_exists, submit_order_proof, get_order, get_setting
 from states.order_states import OrderFlow
 from keyboards.user_keyboards import get_cancel_order_keyboard, get_main_menu_keyboard
 from keyboards.admin_keyboards import get_admin_verification_keyboard
@@ -34,22 +34,24 @@ async def handle_buy_service(query: CallbackQuery, state: FSMContext, bot: Bot):
     await state.set_state(OrderFlow.waiting_for_screenshot)
     await state.update_data(order_id=order_id, service_id=service_id, price=service["price_inr"])
 
+    upi_id = await get_setting("upi_id", config.UPI_ID)
+    upi_name = await get_setting("upi_name", config.UPI_NAME)
+    qr_path = await get_setting("qr_image_path", config.QR_IMAGE_PATH)
+
     caption = (
         f"🧾 **Order Generated:** `#{order_id}`\n\n"
         f"📌 **Service:** {service['title']}\n"
         f"💰 **Amount to Pay:** `₹{service['price_inr']:.0f}`\n\n"
-        f"📲 **UPI ID:** `{config.UPI_ID}` *(Tap to copy)*\n"
-        f"👤 **Payee Name:** {config.UPI_NAME}\n\n"
+        f"📲 **UPI ID:** `{upi_id}` *(Tap to copy)*\n"
+        f"👤 **Payee Name:** {upi_name}\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "📝 **Payment Steps:**\n"
         "1. Scan the QR code above or pay to the UPI ID.\n"
         "2. Complete the payment of exact amount in your UPI app.\n"
         "3. Take a screenshot of the successful payment screen.\n"
-        "4. **Upload the screenshot here as a photo.**\n\n"
-        "⚠️ *Do not send fake or old screenshots. All UTR numbers are verified.*"
+        "4. **Upload the screenshot here as a photo.**"
     )
 
-    qr_path = config.QR_IMAGE_PATH
     cancel_kb = get_cancel_order_keyboard(order_id)
 
     if os.path.exists(qr_path):
