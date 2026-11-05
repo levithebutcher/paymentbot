@@ -5,7 +5,12 @@ import html
 import asyncio
 from datetime import datetime
 from PIL import Image
-import winocr
+
+try:
+    import winocr
+except (ImportError, Exception):
+    winocr = None
+
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
@@ -159,23 +164,24 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
     ocr_text = ""
     amount_found = False
     extracted_utr = None
-    try:
-        img = Image.open(temp_img_path)
-        # Timeout winocr so it never causes lag
-        res = await asyncio.wait_for(winocr.recognize_pil(img, lang="en"), timeout=2.5)
-        ocr_text = res.text or ""
+    if winocr:
+        try:
+            img = Image.open(temp_img_path)
+            # Timeout winocr so it never causes lag
+            res = await asyncio.wait_for(winocr.recognize_pil(img, lang="en"), timeout=2.5)
+            ocr_text = res.text or ""
 
-        # Check if expected amount (e.g. 199, 199.00) is visible in the text
-        price_int = int(price)
-        if str(price_int) in ocr_text or f"{price:.2f}" in ocr_text or f"{price:.0f}" in ocr_text:
-            amount_found = True
+            # Check if expected amount (e.g. 199, 199.00) is visible in the text
+            price_int = int(price)
+            if str(price_int) in ocr_text or f"{price:.2f}" in ocr_text or f"{price:.0f}" in ocr_text:
+                amount_found = True
 
-        # Try to find a UTR-like 10-14 digit sequence in OCR
-        utr_match = re.search(r"\b\d{10,14}\b", ocr_text)
-        if utr_match:
-            extracted_utr = utr_match.group(0)
-    except Exception as e:
-        print(f"OCR Scan warning/timeout: {e}")
+            # Try to find a UTR-like 10-14 digit sequence in OCR
+            utr_match = re.search(r"\b\d{10,14}\b", ocr_text)
+            if utr_match:
+                extracted_utr = utr_match.group(0)
+        except Exception as e:
+            print(f"OCR Scan warning/timeout: {e}")
     finally:
         if os.path.exists(temp_img_path):
             try:
