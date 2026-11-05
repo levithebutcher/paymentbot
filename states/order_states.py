@@ -15,6 +15,7 @@ class EditServiceFlow(StatesGroup):
     waiting_for_new_price = State()
     waiting_for_new_title = State()
     waiting_for_new_description = State()
+    waiting_for_new_delivery = State()
 
 class BroadcastFlow(StatesGroup):
     waiting_for_content = State()
