@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import html
+import uuid
 from datetime import datetime
 from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, Message
@@ -28,7 +29,13 @@ from database import (
     set_setting,
     get_order_by_message
 )
-from states.order_states import AddServiceFlow, EditServiceFlow, BroadcastFlow, EditPaymentFlow
+from states.order_states import (
+    AddServiceFlow,
+    EditServiceFlow,
+    BroadcastFlow,
+    EditPaymentFlow,
+    AdminDeliveryFlow
+)
 from keyboards.admin_keyboards import (
     get_admin_verification_keyboard,
     get_admin_rejection_reasons_keyboard,
@@ -38,6 +45,7 @@ from keyboards.admin_keyboards import (
     get_service_actions_keyboard,
     get_broadcast_confirm_keyboard,
     get_cancel_admin_flow_keyboard,
+    get_cancel_delivery_keyboard,
     REJECTION_REASONS
 )
 from keyboards.user_keyboards import get_retry_keyboard
@@ -51,91 +59,115 @@ def is_admin_authorized(user_id: int) -> bool:
     return user_id in config.ADMIN_IDS
 
 # ==========================================
-# 1. PAYMENT VERIFICATION HANDLERS (ADMIN GROUP)
+# 1. PAYMENT VERIFICATION & DELIVERY HANDLERS
 # ==========================================
 
-@admin_router.callback_query(F.data.startswith("admin_approve:"))
-async def handle_admin_approve(query: CallbackQuery, bot: Bot):
-    admin = query.from_user
-    order_id = query.data.split(":")[1]
+@admin_router.callback_query(F.data.startswith("admin_deliver_flow:") | F.data.startswith("admin_approve:"))
+async def handle_admin_deliver_flow_start(query: CallbackQuery, state: FSMContext):
+    if not is_admin_authorized(query.from_user.id):
+        await query.answer("⛔ Unauthorized", show_alert=True)
+        return
 
+    order_id = query.data.split(":")[1]
     order = await get_order(order_id)
     if not order:
         await query.answer("⚠️ Order not found in database.", show_alert=True)
         return
 
     if order["status"] == "COMPLETED":
-        await query.answer("ℹ️ This order is already approved.", show_alert=True)
+        await query.answer("ℹ️ This order is already COMPLETED.", show_alert=True)
         return
 
-    updated_order = await approve_order(order_id, admin.id)
-    if not updated_order:
-        await query.answer("⚠️ Could not update order (status changed or not pending).", show_alert=True)
-        return
-
-    await query.answer("✅ Order approved successfully!")
-
-    admin_name = f"@{admin.username}" if admin.username else admin.full_name
-    safe_admin_name = html.escape(admin_name)
-    approved_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    current_caption = query.message.caption or ""
-    status_block = (
-        f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ <b>STATUS: APPROVED</b>\n"
-        f"👮 <b>Verified by:</b> {safe_admin_name} (<code>{admin.id}</code>)\n"
-        f"🕒 <b>Time:</b> {approved_time}"
+    await query.answer()
+    await state.set_state(AdminDeliveryFlow.waiting_for_delivery_item)
+    await state.update_data(
+        order_id=order_id,
+        buyer_id=order["user_id"],
+        service_title=order["service_title"],
+        card_msg_id=query.message.message_id,
+        card_chat_id=query.message.chat.id
     )
-    max_orig_len = 1020 - len(status_block)
-    if len(current_caption) > max_orig_len:
-        current_caption = current_caption[:max_orig_len] + "..."
-    new_caption = current_caption + status_block
+
+    safe_title = html.escape(order["service_title"])
+    prompt_text = (
+        "╭── 📤 ORDER DELIVERY ─────────╮\n"
+        f"│ 🧾 Order: <code>#{order_id}</code>\n"
+        f"│ 👤 Customer ID: <code>{order['user_id']}</code>\n"
+        f"│ 📌 Service: <b>{safe_title}</b>\n"
+        "╰──────────────────────────────╯\n\n"
+        "👉 <b>Send the delivery file or content now:</b>\n"
+        "• Send a Document (PDF, ZIP, APK, file, etc.)\n"
+        "• Or send a Photo / Video\n"
+        "• Or send a Text message / Access link\n\n"
+        "<i>The bot will forward it directly to this customer!</i>"
+    )
+    await query.message.reply(prompt_text, reply_markup=get_cancel_delivery_keyboard(), parse_mode="HTML")
+
+@admin_router.callback_query(F.data == "admin_cancel_delivery")
+async def handle_admin_cancel_delivery(query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await query.answer("Delivery cancelled.")
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+@admin_router.message(AdminDeliveryFlow.waiting_for_delivery_item)
+async def handle_admin_send_delivery(message: Message, state: FSMContext, bot: Bot):
+    if not is_admin_authorized(message.from_user.id):
+        return
+
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    buyer_id = data.get("buyer_id")
+    service_title = data.get("service_title", "Service")
+    card_msg_id = data.get("card_msg_id")
+    card_chat_id = data.get("card_chat_id")
+
+    if not order_id or not buyer_id:
+        await state.clear()
+        await message.reply("⚠️ Delivery session expired. Please tap 'Send Delivery' on the order card again.")
+        return
+
+    safe_title = html.escape(service_title)
+    delivery_header = (
+        "╭── 🎉 ORDER DELIVERED ────────╮\n"
+        f"│ 🧾 Order ID: <code>#{order_id}</code>\n"
+        f"│ 📌 Service: <b>{safe_title}</b>\n"
+        "╰──────────────────────────────╯\n"
+        "🎁 <b>Here is your purchase delivery:</b>"
+    )
 
     try:
-        await query.message.edit_caption(
-            caption=new_caption,
-            reply_markup=None,
+        await bot.send_message(chat_id=buyer_id, text=delivery_header, parse_mode="HTML")
+        # Copy the admin's file/document/photo/video/text directly to buyer!
+        await message.copy_to(chat_id=buyer_id)
+        await bot.send_message(
+            chat_id=buyer_id,
+            text="🙏 <i>Thank you for your purchase! Feel free to reach out if you have any questions.</i>",
             parse_mode="HTML"
         )
     except Exception as e:
-        print(f"Could not edit admin message caption with HTML: {e}. Retrying plain text...")
-        try:
-            plain_status = (
-                f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
-                f"✅ STATUS: APPROVED\n"
-                f"👮 Verified by: {admin_name} ({admin.id})\n"
-                f"🕒 Time: {approved_time}"
-            )
-            await query.message.edit_caption(
-                caption=(query.message.caption or "")[:800] + plain_status,
-                reply_markup=None
-            )
-        except Exception as e2:
-            print(f"Fallback caption edit failed: {e2}")
+        await message.reply(f"⚠️ Could not deliver to customer ({buyer_id}): {e}")
+        return
 
-    # Deliver service to the user
-    user_id = order["user_id"]
-    delivery_msg = (
-        "🎉 **PAYMENT VERIFIED & APPROVED!**\n\n"
-        f"🧾 **Order ID:** `#{order_id}`\n"
-        f"📌 **Service:** {order['service_title']}\n"
-        f"💰 **Amount Paid:** ₹{order['amount']:.0f}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "🎁 **Your Service / Access Details:**\n\n"
-        f"{order['delivery_content']}\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🙏 Thank you for your purchase! If you have any questions, feel free to reach out to our support team."
+    # Mark order completed in DB
+    await approve_order(order_id, message.from_user.id)
+    await state.clear()
+
+    admin_name = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+    await message.reply(
+        f"✅ <b>Order #{order_id} successfully delivered to customer ({buyer_id})!</b>\n"
+        "Order status updated to <code>COMPLETED</code>.",
+        parse_mode="HTML"
     )
 
-    try:
-        await bot.send_message(
-            chat_id=user_id,
-            text=delivery_msg,
-            parse_mode="Markdown",
-            disable_web_page_preview=False
-        )
-    except Exception as e:
-        print(f"Could not deliver service to user {user_id}: {e}")
+    # Update admin card to remove buttons
+    if card_msg_id and card_chat_id:
+        try:
+            await bot.edit_message_reply_markup(chat_id=card_chat_id, message_id=card_msg_id, reply_markup=None)
+        except Exception as e:
+            print(f"Could not update card markup: {e}")
 
 @admin_router.callback_query(F.data.startswith("admin_reject:"))
 async def handle_admin_direct_reject(query: CallbackQuery, bot: Bot):
@@ -198,14 +230,14 @@ async def handle_admin_direct_reject(query: CallbackQuery, bot: Bot):
 
     user_id = order["user_id"]
     user_rejection_text = (
-        "❌ **PAYMENT VERIFICATION FAILED**\n\n"
-        f"🧾 **Order ID:** `#{order_id}`\n"
-        f"📌 **Service:** {order['service_title']}\n\n"
-        f"⚠️ **Reason for rejection:**\n_{reason_text}_\n\n"
-        "💡 *What to do next?*\n"
-        "• Please verify in your bank/UPI app that the money was actually debited.\n"
-        "• Ensure you uploaded a clear, uncropped screenshot with visible amount.\n"
-        "• You can try ordering again or contact support for help."
+        "╭── ❌ VERIFICATION FAILED ────╮\n"
+        f"│ 🧾 Order: <code>#{order_id}</code>\n"
+        f"│ 📌 Service: <b>{html.escape(order['service_title'])}</b>\n"
+        "╰──────────────────────────────╯\n\n"
+        f"⚠️ <b>Reason:</b> <i>{safe_reason}</i>\n\n"
+        "• Please verify in your UPI app that the payment went through.\n"
+        "• Ensure you uploaded an uncropped, clear transaction receipt.\n"
+        "• Tap below to try again or contact support."
     )
 
     retry_kb = get_retry_keyboard(order["service_id"])
@@ -214,7 +246,7 @@ async def handle_admin_direct_reject(query: CallbackQuery, bot: Bot):
             chat_id=user_id,
             text=user_rejection_text,
             reply_markup=retry_kb,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     except Exception as e:
         print(f"Could not send rejection message to user {user_id}: {e}")
@@ -296,14 +328,14 @@ async def handle_admin_reject_reason(query: CallbackQuery, bot: Bot):
 
     user_id = order["user_id"]
     user_rejection_text = (
-        "❌ **PAYMENT VERIFICATION FAILED**\n\n"
-        f"🧾 **Order ID:** `#{order_id}`\n"
-        f"📌 **Service:** {order['service_title']}\n\n"
-        f"⚠️ **Reason for rejection:**\n_{reason_text}_\n\n"
-        "💡 *What to do next?*\n"
-        "• Please verify in your bank/UPI app that the money was actually debited.\n"
-        "• Ensure you uploaded a clear, uncropped screenshot with visible UTR.\n"
-        "• You can try ordering again or contact support for help."
+        "╭── ❌ VERIFICATION FAILED ────╮\n"
+        f"│ 🧾 Order: <code>#{order_id}</code>\n"
+        f"│ 📌 Service: <b>{html.escape(order['service_title'])}</b>\n"
+        "╰──────────────────────────────╯\n\n"
+        f"⚠️ <b>Reason:</b> <i>{safe_reason}</i>\n\n"
+        "• Please verify in your UPI app that the payment went through.\n"
+        "• Ensure you uploaded an uncropped, clear transaction receipt.\n"
+        "• Tap below to try again or contact support."
     )
 
     retry_kb = get_retry_keyboard(order["service_id"])
@@ -312,7 +344,7 @@ async def handle_admin_reject_reason(query: CallbackQuery, bot: Bot):
             chat_id=user_id,
             text=user_rejection_text,
             reply_markup=retry_kb,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     except Exception as e:
         print(f"Could not send rejection message to user {user_id}: {e}")
@@ -831,7 +863,7 @@ async def edit_title_finish(message: Message, state: FSMContext):
     )
 
 # ==========================================
-# 4. ADD NEW SERVICE WIZARD
+# 4. ADD NEW SERVICE WIZARD (STREAMLINED)
 # ==========================================
 
 @admin_router.callback_query(F.data == "admin_nav:add_service")
@@ -840,88 +872,75 @@ async def add_service_step1(query: CallbackQuery, state: FSMContext):
         await query.answer("⛔ Unauthorized", show_alert=True)
         return
 
-    await state.set_state(AddServiceFlow.waiting_for_id)
+    await state.set_state(AddServiceFlow.waiting_for_title)
     await query.answer()
     text = (
-        "➕ **ADD NEW SERVICE WIZARD (Step 1/5)**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Please enter a **short, unique ID** for this service (letters, numbers, underscore only; e.g. `vip_pro`, `course_2026`):"
+        "╭── ➕ ADD NEW SERVICE (1/3) ──╮\n"
+        "╰──────────────────────────────╯\n"
+        "Send the <b>Service Title</b> (e.g. <code>💎 VIP Signals Channel</code>):"
     )
-    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="Markdown")
-
-@admin_router.message(AddServiceFlow.waiting_for_id, F.text)
-async def add_service_step2(message: Message, state: FSMContext):
-    raw_id = message.text.strip().lower()
-    if not re.match(r"^[a-z0-9_]{3,30}$", raw_id):
-        await message.reply("⚠️ Invalid ID format. Use 3-30 lowercase characters with numbers/underscores (e.g. `crypto_vip`):")
-        return
-
-    existing = await get_service(raw_id)
-    if existing:
-        await message.reply(f"⚠️ A service with ID `{raw_id}` already exists. Please pick a different ID:")
-        return
-
-    await state.update_data(new_svc_id=raw_id)
-    await state.set_state(AddServiceFlow.waiting_for_title)
-    await message.reply("📝 **Step 2/5:** Send the **Title** of the service (e.g. `💎 VIP Master Channel`):")
+    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
 @admin_router.message(AddServiceFlow.waiting_for_title, F.text)
-async def add_service_step3(message: Message, state: FSMContext):
+async def add_service_step2(message: Message, state: FSMContext):
     title = message.text.strip()
     await state.update_data(new_svc_title=title)
     await state.set_state(AddServiceFlow.waiting_for_description)
-    await message.reply("📄 **Step 3/5:** Send a **Description** explaining what the buyer receives:")
+    text = (
+        "╭── ➕ ADD NEW SERVICE (2/3) ──╮\n"
+        "╰──────────────────────────────╯\n"
+        f"Title: <b>{html.escape(title)}</b>\n\n"
+        "Now send a short <b>Description</b> explaining the service:"
+    )
+    await message.reply(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
 @admin_router.message(AddServiceFlow.waiting_for_description, F.text)
-async def add_service_step4(message: Message, state: FSMContext):
+async def add_service_step3(message: Message, state: FSMContext):
     desc = message.text.strip()
     await state.update_data(new_svc_desc=desc)
     await state.set_state(AddServiceFlow.waiting_for_price)
-    await message.reply("💰 **Step 4/5:** Send the **Price in INR** (e.g. `199`):")
+    text = (
+        "╭── ➕ ADD NEW SERVICE (3/3) ──╮\n"
+        "╰──────────────────────────────╯\n"
+        "Send the <b>Price in INR</b> (e.g. <code>199</code> or <code>499</code>):"
+    )
+    await message.reply(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
 @admin_router.message(AddServiceFlow.waiting_for_price, F.text)
-async def add_service_step5(message: Message, state: FSMContext):
+async def add_service_finish(message: Message, state: FSMContext):
     raw = message.text.strip().replace("₹", "").replace(",", "")
     try:
         price = float(raw)
         if price <= 0:
             raise ValueError
     except ValueError:
-        await message.reply("⚠️ Please enter a valid numeric price (e.g. `199`):")
+        await message.reply("⚠️ Please enter a valid numeric price (e.g. <code>199</code>):", parse_mode="HTML")
         return
 
-    await state.update_data(new_svc_price=price)
-    await state.set_state(AddServiceFlow.waiting_for_delivery)
-    await message.reply(
-        "🎁 **Step 5/5:** Send the **Delivery Content**\n"
-        "(This will be sent to the user immediately after payment is approved; e.g. Private channel invite link, Google Drive link, or instructions):"
-    )
-
-@admin_router.message(AddServiceFlow.waiting_for_delivery, F.text)
-async def add_service_finish(message: Message, state: FSMContext):
-    delivery = message.text.strip()
     data = await state.get_data()
-    svc_id = data["new_svc_id"]
     title = data["new_svc_title"]
     desc = data["new_svc_desc"]
-    price = data["new_svc_price"]
 
-    success = await add_service(svc_id, title, desc, price, delivery)
+    # Generate a clean unique ID from title
+    clean_slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:16] or "svc"
+    svc_id = f"{clean_slug}_{uuid.uuid4().hex[:4]}"
+
+    success = await add_service(svc_id, title, desc, price, "Custom fulfillment by Admin.")
     await state.clear()
 
     if success:
         text = (
-            "🎉 **NEW SERVICE CREATED & ACTIVATED!**\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"🆔 **ID:** `{svc_id}`\n"
-            f"🏷️ **Title:** {title}\n"
-            f"💰 **Price:** ₹{price:.0f}\n\n"
-            "It is now live in the `/start` and `🛍️ View Services` catalog for all customers!"
+            "╭── 🎉 SERVICE CREATED! ───────╮\n"
+            f"│ 🏷️ Title: <b>{html.escape(title)}</b>\n"
+            f"│ 💰 Price: <b>₹{price:.0f}</b>\n"
+            f"│ 🆔 ID: <code>{svc_id}</code>\n"
+            "╰──────────────────────────────╯\n"
+            "This item is now live in the store catalog for all customers!"
         )
     else:
         text = "⚠️ An error occurred while creating the service in the database."
 
-    await message.reply(text, reply_markup=get_admin_dashboard_keyboard(), parse_mode="Markdown")
+    await message.reply(text, reply_markup=get_admin_dashboard_keyboard(), parse_mode="HTML")
 
 # ==========================================
 # 5. BROADCAST SYSTEM (ALL REGISTERED USERS)

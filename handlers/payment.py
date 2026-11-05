@@ -2,6 +2,7 @@ import os
 import uuid
 import re
 import html
+import asyncio
 from datetime import datetime
 from PIL import Image
 import winocr
@@ -66,24 +67,25 @@ async def handle_buy_service(query: CallbackQuery, state: FSMContext, bot: Bot):
         if os.path.exists(fallback_qr):
             qr_path = fallback_qr
 
+    safe_title = html.escape(service['title'])
+    safe_payee = html.escape(upi_name)
+
     caption = (
-        f"🧾 **Order Generated:** `#{order_id}`\n\n"
-        f"📌 **Service:** {service['title']}\n"
-        f"💰 **Amount to Pay:** `₹{service['price_inr']:.0f}`\n\n"
-        f"📲 **UPI ID:** `{upi_id}` *(Tap to copy)*\n"
-        f"👤 **Payee Name:** {upi_name}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "📝 **Payment Steps:**\n"
+        f"╭── 🧾 CHECKOUT: #{order_id} ──╮\n"
+        f"│ 📌 Service: <b>{safe_title}</b>\n"
+        f"│ 💵 Total Due: <b>₹{service['price_inr']:.0f}</b>\n"
+        "╰──────────────────────────────╯\n"
+        f"📲 <b>UPI ID:</b> <code>{upi_id}</code> <i>(Tap to copy)</i>\n"
+        f"👤 <b>Payee Name:</b> {safe_payee}\n\n"
         "1. Scan the QR code above or pay to the UPI ID.\n"
-        "2. Complete the payment of exact amount in your UPI app.\n"
-        "3. Take a screenshot of the successful payment screen.\n"
-        "4. **Upload the screenshot here as a photo.**"
+        "2. Complete the payment of exact amount.\n"
+        "3. <b>Upload your payment screenshot here</b> to finish."
     )
 
     cancel_kb = get_cancel_order_keyboard(order_id)
     sent_msg = None
 
-    # Delete previous service detail message to keep chat history clean
+    # Delete previous service detail message to keep chat history spotless
     try:
         await query.message.delete()
     except Exception:
@@ -96,17 +98,17 @@ async def handle_buy_service(query: CallbackQuery, state: FSMContext, bot: Bot):
                 photo=photo,
                 caption=caption,
                 reply_markup=cancel_kb,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
         except Exception as e:
             print(f"Error sending QR photo: {e}")
-            sent_msg = await query.message.answer(caption, reply_markup=cancel_kb, parse_mode="Markdown")
+            sent_msg = await query.message.answer(caption, reply_markup=cancel_kb, parse_mode="HTML")
     else:
         # Fallback if QR image is not yet placed in assets
         sent_msg = await query.message.answer(
-            f"⚠️ QR Image not found at `{qr_path}`.\n\n" + caption,
+            f"⚠️ QR Image not found at <code>{qr_path}</code>.\n\n" + caption,
             reply_markup=cancel_kb,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
     if sent_msg:
@@ -123,9 +125,9 @@ async def handle_cancel_order(query: CallbackQuery, state: FSMContext):
         pass
 
     await query.message.answer(
-        "❌ **Order cancelled.** You can browse our services anytime.",
+        "✕ <b>Order cancelled.</b> You can start fresh anytime from the catalog.",
         reply_markup=get_main_menu_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 @payment_router.message(OrderFlow.waiting_for_screenshot, F.photo)
@@ -154,7 +156,8 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
     extracted_utr = None
     try:
         img = Image.open(temp_img_path)
-        res = await winocr.recognize_pil(img, lang="en")
+        # Timeout winocr so it never causes lag
+        res = await asyncio.wait_for(winocr.recognize_pil(img, lang="en"), timeout=2.5)
         ocr_text = res.text or ""
 
         # Check if expected amount (e.g. 199, 199.00) is visible in the text
@@ -167,7 +170,7 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
         if utr_match:
             extracted_utr = utr_match.group(0)
     except Exception as e:
-        print(f"OCR Scan error: {e}")
+        print(f"OCR Scan warning/timeout: {e}")
     finally:
         if os.path.exists(temp_img_path):
             try:
@@ -178,55 +181,48 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
     # 2. Update Database: mark order as PENDING_VERIFICATION
     await submit_order_proof(order_id=order_id, screenshot_file_id=photo_file_id, utr=extracted_utr)
 
-    # 3. Clean up the user's QR code card (remove cancel button)
+    # 3. Clean up the user's QR code card (Delete it completely to keep chat spotless!)
     if qr_msg_id:
         try:
-            await bot.edit_message_reply_markup(
-                chat_id=message.chat.id,
-                message_id=qr_msg_id,
-                reply_markup=None
-            )
+            await bot.delete_message(chat_id=message.chat.id, message_id=qr_msg_id)
         except Exception:
             pass
 
     # 4. Clear user's FSM state
     await state.clear()
 
-    # 5. Send warm confirmation message to USER (no manual UTR prompt!)
+    # 5. Send warm, aesthetic confirmation to USER
     order_info = await get_order(order_id)
     service_title = order_info["service_title"] if order_info else "Selected Service"
+    safe_service = html.escape(service_title)
 
     user_receipt_text = (
-        "🙏 **Payment Screenshot Received! Thank You!**\n\n"
-        f"🧾 **Order ID:** `#{order_id}`\n"
-        f"👤 **Customer ID:** `{user.id}`\n"
-        f"📌 **Service:** {service_title}\n"
-        f"💰 **Amount:** ₹{price:.0f}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "⏳ **Kripya thoda patience rakhein.**\n"
-        "Hamari admin team bank account me payment verify kar rahi hai.\n"
-        "Jaise hi verification complete hoga, aapka order / access aapko **yahin bot me turant automatically deliver** kar diya jayega! 🚀\n"
-        "━━━━━━━━━━━━━━━━━━━━"
+        "╭── 🧾 RECEIPT RECEIVED ────────╮\n"
+        f"│ 🧾 Order: <code>#{order_id}</code>\n"
+        f"│ 📌 Service: <b>{safe_service}</b>\n"
+        f"│ 💰 Amount: <b>₹{price:.0f}</b>\n"
+        "╰──────────────────────────────╯\n\n"
+        "⏳ <b>Under Verification</b>\n"
+        "Your payment proof has been submitted to our admin team.\n"
+        "Once verified, your file or access will be <b>delivered directly here in this chat!</b> 🚀"
     )
-    await message.reply(user_receipt_text, reply_markup=get_main_menu_keyboard(), parse_mode="Markdown")
+    await message.reply(user_receipt_text, reply_markup=get_main_menu_keyboard(), parse_mode="HTML")
 
     # 6. Forward Verification Card to Admin:
-    # (Send to Admin Group if configured, AND to all Admin DMs so you NEVER miss a payment!)
     if amount_found:
         ocr_badge = f"✅ <b>MATCHED</b>: ₹{price:.0f} detected in receipt image"
         plain_badge = f"✅ MATCHED: ₹{price:.0f} detected in receipt image"
     else:
-        ocr_badge = f"⚠️ <b>CAUTION</b>: ₹{price:.0f} not clearly detected in OCR scan (Please verify receipt visually)"
-        plain_badge = f"⚠️ CAUTION: ₹{price:.0f} not clearly detected in OCR scan (Please verify receipt visually)"
+        ocr_badge = f"⚠️ <b>CAUTION</b>: ₹{price:.0f} not clearly detected in OCR scan (Please check visually)"
+        plain_badge = f"⚠️ CAUTION: ₹{price:.0f} not clearly detected in OCR scan (Please check visually)"
 
     username_str = f"@{user.username}" if user.username else "No username"
     safe_name = html.escape(user.full_name or "Anonymous")
     safe_username = html.escape(username_str)
-    safe_service = html.escape(service_title)
     safe_utr = html.escape(extracted_utr) if extracted_utr else "Not detected in scan"
 
     admin_caption_html = (
-        "🔔 <b>NEW PAYMENT VERIFICATION REQUEST</b>\n"
+        "🔔 <b>NEW PAYMENT RECEIVED</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"🧾 <b>Order ID:</b> <code>#{order_id}</code>\n"
         f"👤 <b>Customer:</b> {safe_name} ({safe_username})\n"
@@ -237,11 +233,11 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
         f"🔍 <b>Auto-Scan:</b> {ocr_badge}\n"
         f"🕒 <b>Submitted:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "👉 <i>Action:</i> Tap <b>Approve</b> to deliver default service link, OR <b>Reply to this message</b> with any custom file/link/message to deliver it directly to this customer!"
+        "👉 <i>Action:</i> Tap <b>Send Delivery</b> to provide the file/access, or reply directly to this card!"
     )
 
     admin_caption_plain = (
-        "🔔 NEW PAYMENT VERIFICATION REQUEST\n"
+        "🔔 NEW PAYMENT RECEIVED\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"🧾 Order ID: #{order_id}\n"
         f"👤 Customer: {user.full_name} ({username_str})\n"
@@ -252,7 +248,7 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
         f"🔍 Auto-Scan: {plain_badge}\n"
         f"🕒 Submitted: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "👉 Action: Tap Approve or Reply to this message with a file to deliver!"
+        "👉 Action: Tap Send Delivery to provide file/access, or reply directly to this card!"
     )
 
     admin_kb = get_admin_verification_keyboard(order_id)

@@ -1,3 +1,4 @@
+import html
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from database import get_services, get_service
@@ -5,7 +6,7 @@ from keyboards.user_keyboards import get_services_keyboard, get_service_detail_k
 
 services_router = Router()
 
-@services_router.message(F.text == "🛍️ View Services")
+@services_router.message(F.text.in_({"💎 View Services", "🛍️ View Services"}))
 @services_router.callback_query(F.data == "back_to_services")
 async def show_services_catalog(event: Message | CallbackQuery):
     services = await get_services()
@@ -17,7 +18,12 @@ async def show_services_catalog(event: Message | CallbackQuery):
             await event.answer(msg)
         return
 
-    text = "📋 **Available Services Catalog:**\n\nSelect a service to view full details and proceed to payment:"
+    text = (
+        "╭── 💎 SERVICES CATALOG ───────╮\n"
+        "│ Select an item below to view │\n"
+        "│ full details & pricing:      │\n"
+        "╰──────────────────────────────╯"
+    )
     kb = get_services_keyboard(services)
 
     if isinstance(event, CallbackQuery):
@@ -28,11 +34,14 @@ async def show_services_catalog(event: Message | CallbackQuery):
                 await event.message.delete()
             except Exception:
                 pass
-            await event.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+            await event.message.answer(text, reply_markup=kb, parse_mode="HTML")
         else:
-            await event.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+            try:
+                await event.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+            except Exception:
+                await event.message.answer(text, reply_markup=kb, parse_mode="HTML")
     else:
-        await event.answer(text, reply_markup=kb, parse_mode="Markdown")
+        await event.answer(text, reply_markup=kb, parse_mode="HTML")
 
 @services_router.callback_query(F.data.startswith("select_service:"))
 async def handle_select_service(query: CallbackQuery):
@@ -44,11 +53,15 @@ async def handle_select_service(query: CallbackQuery):
         await query.message.answer("⚠️ Service not found or no longer available.")
         return
 
+    safe_title = html.escape(service['title'])
+    safe_desc = html.escape(service['description'] or "Premium digital service.")
+
     text = (
-        f"🏷️ **{service['title']}**\n\n"
-        f"📝 **Description:**\n{service['description']}\n\n"
-        f"💰 **Price:** `₹{service['price_inr']:.0f}`\n\n"
-        "To purchase this service, click **Pay Now & Order** below to get the payment QR Code."
+        f"╭── 💎 {safe_title}\n"
+        f"│ 💵 Price: <b>₹{service['price_inr']:.0f}</b>\n"
+        "╰──────────────────────────────╯\n"
+        f"{safe_desc}\n\n"
+        "<i>Tap 'Proceed to Payment' to generate your UPI QR Code.</i>"
     )
 
     kb = get_service_detail_keyboard(service_id)
@@ -57,6 +70,9 @@ async def handle_select_service(query: CallbackQuery):
             await query.message.delete()
         except Exception:
             pass
-        await query.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        await query.message.answer(text, reply_markup=kb, parse_mode="HTML")
     else:
-        await query.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        try:
+            await query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await query.message.answer(text, reply_markup=kb, parse_mode="HTML")

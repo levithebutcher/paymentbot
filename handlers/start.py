@@ -1,9 +1,14 @@
+import html
 from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from database import upsert_user, get_services, get_user_orders
-from keyboards.user_keyboards import get_main_menu_keyboard, get_services_keyboard
+from keyboards.user_keyboards import (
+    get_main_menu_keyboard,
+    get_services_keyboard,
+    get_back_to_catalog_keyboard
+)
 
 start_router = Router()
 
@@ -14,46 +19,49 @@ async def handle_start(message: Message, state: FSMContext):
     if user:
         await upsert_user(user.id, user.username, user.full_name)
 
+    first_name = html.escape(user.first_name if user else "Member")
     welcome_text = (
-        f"👋 **Namaste {user.first_name if user else 'Friend'}!**\n\n"
-        "Welcome to our automated **Payment & Service Bot**.\n\n"
-        "Here you can browse available services, pay securely via **UPI QR Code**, "
-        "and receive instant access once your payment proof is verified.\n\n"
-        "👇 **Choose an option below to get started:**"
+        "╭──────────────────────────────╮\n"
+        "│     ✦ DIGITAL SERVICES STORE ✦    │\n"
+        "╰──────────────────────────────╯\n"
+        f"Welcome, <b>{first_name}</b>!\n\n"
+        "Browse our catalog, checkout securely via <b>UPI QR Code</b>, and receive your verified delivery directly in this chat.\n\n"
+        "⚡ <i>Instant UPI Activation</i>\n"
+        "🔒 <i>Direct Verified Delivery by Admin</i>"
     )
-    
-    await message.answer(welcome_text, reply_markup=get_main_menu_keyboard(), parse_mode="Markdown")
-    
-    # Also present the catalog directly
+
+    await message.answer(welcome_text, reply_markup=get_main_menu_keyboard(), parse_mode="HTML")
+
     services = await get_services()
     if services:
         await message.answer(
-            "📋 **Available Services Catalog:**\nSelect a service below to view details and pricing:",
+            "╭── 💎 AVAILABLE SERVICES ─────╮\n"
+            "│ Select an item to view info: │\n"
+            "╰──────────────────────────────╯",
             reply_markup=get_services_keyboard(services),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
 @start_router.message(Command("help"))
-@start_router.message(F.text == "ℹ️ Help & Support")
+@start_router.message(F.text.in_({"💬 Help & Support", "ℹ️ Help & Support"}))
 async def handle_help(message: Message):
     help_text = (
-        "💡 **How to Order & Pay:**\n\n"
-        "1. Tap **🛍️ View Services** and pick the service you want.\n"
-        "2. Tap **💳 Pay Now & Order** to get the UPI QR Code and UPI ID.\n"
-        "3. Scan the QR code using any UPI App (GPay, PhonePe, Paytm, CRED, etc.).\n"
-        "4. Upload the **payment confirmation screenshot** in this chat.\n"
-        "5. Enter the **12-digit UTR / Reference Number** from your banking receipt.\n"
-        "6. Our team verifies the transaction and your service is delivered automatically!\n\n"
-        "⚠️ **Note:** To prevent fraud, all UTRs are checked against our database. Reusing old or fake screenshots will be rejected.\n\n"
-        "Need help? Contact support or type /cancel to abort an active order."
+        "╭── 💬 HOW TO ORDER & PAY ─────╮\n"
+        "│ Follow these 4 simple steps: │\n"
+        "╰──────────────────────────────╯\n\n"
+        "1. <b>Choose Service:</b> Tap <i>💎 View Services</i> and pick your desired item.\n"
+        "2. <b>Make Payment:</b> Scan the UPI QR Code or copy our UPI ID.\n"
+        "3. <b>Send Screenshot:</b> Upload your payment receipt screenshot here.\n"
+        "4. <b>Receive Delivery:</b> Our admin verifies the payment and delivers your file or access directly in this chat!\n\n"
+        "💡 <i>Type /cancel anytime to abort an active order.</i>"
     )
-    await message.answer(help_text, parse_mode="Markdown")
+    await message.answer(help_text, reply_markup=get_main_menu_keyboard(), parse_mode="HTML")
 
 @start_router.message(Command("cancel"))
 async def handle_cancel(message: Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state is None:
-        await message.answer("ℹ️ There is no active order in progress.", reply_markup=get_main_menu_keyboard())
+        await message.answer("ℹ️ No active order in progress.", reply_markup=get_main_menu_keyboard())
         return
 
     data = await state.get_data()
@@ -71,9 +79,9 @@ async def handle_cancel(message: Message, state: FSMContext):
 
     await state.clear()
     await message.answer(
-        "❌ **Order cancelled.** You can start a fresh order anytime from the menu.",
+        "✕ <b>Order cancelled.</b> You can start fresh anytime from the menu.",
         reply_markup=get_main_menu_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 @start_router.message(F.text == "📦 My Orders")
@@ -81,32 +89,45 @@ async def handle_cancel(message: Message, state: FSMContext):
 async def handle_my_orders(event: Message | CallbackQuery):
     user_id = event.from_user.id
     orders = await get_user_orders(user_id)
-    
+
     if not orders:
-        text = "📦 **You have not placed any orders yet.**\n\nBrowse our services to make your first purchase!"
+        text = (
+            "╭── 📦 YOUR ORDERS ────────────╮\n"
+            "│ No orders found yet.         │\n"
+            "╰──────────────────────────────╯\n"
+            "Browse our catalog to make your first purchase!"
+        )
     else:
-        text = "📦 **Your Recent Orders:**\n\n"
+        text = (
+            "╭── 📦 RECENT ORDERS ──────────╮\n"
+            "╰──────────────────────────────╯\n\n"
+        )
         for o in orders:
             status = o['status']
             if status == "COMPLETED":
                 badge = "✅ COMPLETED"
             elif status == "PENDING_VERIFICATION":
-                badge = "⏳ UNDER VERIFICATION"
+                badge = "⏳ REVIEWING"
             elif status == "REJECTED":
-                badge = f"❌ REJECTED ({o.get('rejection_reason', 'Unverified')})"
+                reason = o.get('rejection_reason') or 'Unverified'
+                badge = f"❌ REJECTED ({html.escape(reason)})"
             else:
                 badge = "🟡 PENDING PAYMENT"
 
             text += (
-                f"• **Order:** `#{o['order_id']}`\n"
-                f"  Service: {o['service_title']}\n"
-                f"  Amount: ₹{o['amount']:.0f}\n"
-                f"  Status: {badge}\n"
-                f"  Date: {o['created_at']}\n\n"
+                f"• <b>Order:</b> <code>#{o['order_id']}</code>\n"
+                f"  <b>Service:</b> {html.escape(o['service_title'])}\n"
+                f"  <b>Amount:</b> ₹{o['amount']:.0f}\n"
+                f"  <b>Status:</b> {badge}\n"
+                f"  <b>Date:</b> <i>{o['created_at']}</i>\n\n"
             )
 
+    kb = get_back_to_catalog_keyboard()
     if isinstance(event, CallbackQuery):
         await event.answer()
-        await event.message.answer(text, parse_mode="Markdown")
+        try:
+            await event.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await event.message.answer(text, reply_markup=kb, parse_mode="HTML")
     else:
-        await event.answer(text, parse_mode="Markdown")
+        await event.answer(text, reply_markup=kb, parse_mode="HTML")

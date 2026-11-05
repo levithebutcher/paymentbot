@@ -4,25 +4,30 @@ from typing import List, Dict, Any
 def get_admin_verification_keyboard(order_id: str) -> InlineKeyboardMarkup:
     buttons = [
         [
-            InlineKeyboardButton(text="✅ Approve", callback_data=f"admin_approve:{order_id}"),
+            InlineKeyboardButton(text="📤 Send Delivery", callback_data=f"admin_deliver_flow:{order_id}"),
             InlineKeyboardButton(text="❌ Reject", callback_data=f"admin_reject:{order_id}")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def get_cancel_delivery_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="✕ Cancel Delivery", callback_data="admin_cancel_delivery")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 REJECTION_REASONS = {
-    "not_in_bank": "Payment not received/credited in our bank account",
-    "fake_utr": "Invalid or unverified UTR/Transaction reference",
-    "wrong_amount": "Transferred amount does not match the order total",
+    "not_in_bank": "Payment not credited to bank account",
+    "wrong_amount": "Amount transferred does not match order price",
     "blurry_proof": "Screenshot is blurry, cropped, or unreadable",
+    "invalid_proof": "Receipt could not be verified by admin",
 }
 
 def get_admin_rejection_reasons_keyboard(order_id: str) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="🏦 Not in Bank Account", callback_data=f"admin_reject_reason:{order_id}:not_in_bank")],
-        [InlineKeyboardButton(text="⚠️ Fake / Invalid UTR", callback_data=f"admin_reject_reason:{order_id}:fake_utr")],
         [InlineKeyboardButton(text="📉 Incorrect Amount", callback_data=f"admin_reject_reason:{order_id}:wrong_amount")],
-        [InlineKeyboardButton(text="📷 Blurry / Incomplete Screenshot", callback_data=f"admin_reject_reason:{order_id}:blurry_proof")],
+        [InlineKeyboardButton(text="📷 Blurry / Incomplete Image", callback_data=f"admin_reject_reason:{order_id}:blurry_proof")],
         [InlineKeyboardButton(text="◀️ Back", callback_data=f"admin_back_to_verify:{order_id}")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -30,17 +35,17 @@ def get_admin_rejection_reasons_keyboard(order_id: str) -> InlineKeyboardMarkup:
 def get_admin_dashboard_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [
-            InlineKeyboardButton(text="💳 1. Change Payment Method / QR", callback_data="admin_nav:payment_settings")
+            InlineKeyboardButton(text="💳 Payment & QR Settings", callback_data="admin_nav:payment_settings")
         ],
         [
-            InlineKeyboardButton(text="📋 2. Manage Services Catalog", callback_data="admin_nav:services")
+            InlineKeyboardButton(text="📋 Manage Services Catalog", callback_data="admin_nav:services")
         ],
         [
             InlineKeyboardButton(text="📢 Broadcast", callback_data="admin_nav:broadcast"),
             InlineKeyboardButton(text="📊 Stats", callback_data="admin_nav:stats")
         ],
         [
-            InlineKeyboardButton(text="❌ Close Menu", callback_data="admin_nav:close")
+            InlineKeyboardButton(text="✕ Close Panel", callback_data="admin_nav:close")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -72,14 +77,13 @@ def get_service_actions_keyboard(service_id: str, is_active: int) -> InlineKeybo
     buttons = [
         [
             InlineKeyboardButton(text="💰 Edit Price", callback_data=f"svc_action:price:{service_id}"),
-            InlineKeyboardButton(text="🎁 Edit Delivery", callback_data=f"svc_action:delivery:{service_id}")
+            InlineKeyboardButton(text="📝 Edit Title", callback_data=f"svc_action:title:{service_id}")
         ],
         [
-            InlineKeyboardButton(text="📝 Edit Title", callback_data=f"svc_action:title:{service_id}"),
-            InlineKeyboardButton(text=toggle_text, callback_data=f"svc_action:toggle:{service_id}")
+            InlineKeyboardButton(text=toggle_text, callback_data=f"svc_action:toggle:{service_id}"),
+            InlineKeyboardButton(text="🗑️ Delete Service", callback_data=f"svc_action:delete:{service_id}")
         ],
         [
-            InlineKeyboardButton(text="🗑️ Delete Service", callback_data=f"svc_action:delete:{service_id}"),
             InlineKeyboardButton(text="◀️ Back to Services", callback_data="admin_nav:services")
         ]
     ]
@@ -89,13 +93,14 @@ def get_broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [
             InlineKeyboardButton(text="🚀 Send Broadcast Now", callback_data="broadcast_action:confirm"),
-            InlineKeyboardButton(text="❌ Cancel", callback_data="broadcast_action:cancel")
+            InlineKeyboardButton(text="✕ Cancel", callback_data="broadcast_action:cancel")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_cancel_admin_flow_keyboard() -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton(text="❌ Cancel Operation", callback_data="admin_nav:dashboard")]
+        [InlineKeyboardButton(text="✕ Cancel", callback_data="admin_nav:dashboard")]
     ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
     return InlineKeyboardMarkup(inline_keyboard=buttons)
