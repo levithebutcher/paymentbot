@@ -41,8 +41,11 @@ def get_admin_dashboard_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📋 Manage Services Catalog", callback_data="admin_nav:services")
         ],
         [
-            InlineKeyboardButton(text="📢 Broadcast", callback_data="admin_nav:broadcast"),
-            InlineKeyboardButton(text="📊 Stats", callback_data="admin_nav:stats")
+            InlineKeyboardButton(text="📦 Recent Orders", callback_data="admin_nav:orders"),
+            InlineKeyboardButton(text="📊 Live Stats", callback_data="admin_nav:stats")
+        ],
+        [
+            InlineKeyboardButton(text="📢 Broadcast Announcement", callback_data="admin_nav:broadcast")
         ],
         [
             InlineKeyboardButton(text="✕ Close Panel", callback_data="admin_nav:close")
@@ -80,12 +83,32 @@ def get_service_actions_keyboard(service_id: str, is_active: int) -> InlineKeybo
             InlineKeyboardButton(text="📝 Edit Title", callback_data=f"svc_action:title:{service_id}")
         ],
         [
-            InlineKeyboardButton(text=toggle_text, callback_data=f"svc_action:toggle:{service_id}"),
-            InlineKeyboardButton(text="🗑️ Delete Service", callback_data=f"svc_action:delete:{service_id}")
+            InlineKeyboardButton(text="📄 Edit Description", callback_data=f"svc_action:desc:{service_id}"),
+            InlineKeyboardButton(text=toggle_text, callback_data=f"svc_action:toggle:{service_id}")
         ],
         [
+            InlineKeyboardButton(text="🗑️ Delete Service", callback_data=f"svc_action:delete:{service_id}"),
             InlineKeyboardButton(text="◀️ Back to Services", callback_data="admin_nav:services")
         ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_service_created_keyboard(service_id: str) -> InlineKeyboardMarkup:
+    buttons = [
+        [
+            InlineKeyboardButton(text="➕ Add Another Service", callback_data="admin_nav:add_service"),
+            InlineKeyboardButton(text="📋 Manage Services", callback_data="admin_nav:services")
+        ],
+        [
+            InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="admin_nav:dashboard")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_recent_orders_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="🔄 Refresh Orders", callback_data="admin_nav:orders")],
+        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="admin_nav:dashboard")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -102,5 +125,4 @@ def get_cancel_admin_flow_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="✕ Cancel", callback_data="admin_nav:dashboard")]
     ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
     return InlineKeyboardMarkup(inline_keyboard=buttons)

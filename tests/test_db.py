@@ -185,5 +185,28 @@ class TestPaymentBotDatabase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(matched_order["order_id"], order_id)
         self.assertEqual(matched_order["user_id"], user_id)
 
+    async def test_recent_orders_and_description_update(self):
+        user_id = 556677
+        await self.db.upsert_user(user_id, "recentuser", "Recent User")
+        order_id = "ORD-RECENT99"
+        await self.db.create_order(order_id, user_id, "vip_access", 199.0)
+
+        recent = await self.db.get_recent_orders(limit=5)
+        self.assertGreaterEqual(len(recent), 1)
+        self.assertEqual(recent[0]["order_id"], order_id)
+
+        # Test update description
+        success = await self.db.update_service_description("vip_access", "Brand new updated description")
+        self.assertTrue(success)
+        svc = await self.db.get_service("vip_access")
+        self.assertEqual(svc["description"], "Brand new updated description")
+
+    async def test_last_bot_msg_tracking(self):
+        user_id = 445566
+        await self.db.upsert_user(user_id, "cleanuser", "Clean User")
+        await self.db.set_user_last_bot_msg(user_id, 9911)
+        msg_id = await self.db.get_user_last_bot_msg(user_id)
+        self.assertEqual(msg_id, 9911)
+
 if __name__ == "__main__":
     unittest.main()

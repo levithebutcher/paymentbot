@@ -390,6 +390,33 @@ async def update_service_title(service_id: str, new_title: str) -> bool:
         await conn.commit()
         return cursor.rowcount > 0
 
+async def update_service_description(service_id: str, new_description: str) -> bool:
+    """Update description for an existing service."""
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "UPDATE services SET description = ? WHERE service_id = ?",
+            (new_description.strip(), service_id)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+async def get_recent_orders(limit: int = 10) -> List[Dict[str, Any]]:
+    """Retrieve recent orders with service titles and buyer usernames for admin panel."""
+    async with get_connection() as conn:
+        async with conn.execute(
+            """
+            SELECT o.*, s.title as service_title, u.username, u.full_name
+            FROM orders o
+            LEFT JOIN services s ON o.service_id = s.service_id
+            LEFT JOIN users u ON o.user_id = u.user_id
+            ORDER BY o.created_at DESC
+            LIMIT ?
+            """,
+            (limit,)
+        ) as cur:
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
 async def toggle_service_status(service_id: str) -> Optional[int]:
     """Toggle is_active between 1 and 0. Returns the new status (0 or 1) or None."""
     async with get_connection() as conn:
