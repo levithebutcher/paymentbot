@@ -81,6 +81,22 @@ async def main():
     logger.info(f"Admin Group ID configured: {config.ADMIN_GROUP_ID}")
     logger.info(f"Configured UPI ID: {config.UPI_ID}")
 
+    # Configure official bot command menu (Menu button on bottom left)
+    from aiogram.types import BotCommand
+    commands = [
+        BotCommand(command="start", description="🏠 Main Menu & Services"),
+        BotCommand(command="services", description="💎 View Services Catalog"),
+        BotCommand(command="orders", description="📦 My Orders History"),
+        BotCommand(command="support", description="💬 Live Customer Support"),
+        BotCommand(command="help", description="ℹ️ How to Order & FAQs"),
+        BotCommand(command="cancel", description="✕ Cancel Active Order"),
+    ]
+    try:
+        await bot.set_my_commands(commands)
+        logger.info("Bot command menu configured successfully.")
+    except Exception as e:
+        logger.warning(f"Could not set bot commands: {e}")
+
     health_runner = await start_healthcheck_server()
 
     try:

@@ -1,11 +1,13 @@
 import html
 from aiogram import Router, F
+from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from database import get_services, get_service
 from keyboards.user_keyboards import get_services_keyboard, get_service_detail_keyboard
 
 services_router = Router()
 
+@services_router.message(Command("services"))
 @services_router.message(F.text.in_({"💎 View Services", "🛍️ View Services"}))
 @services_router.callback_query(F.data == "back_to_services")
 async def show_services_catalog(event: Message | CallbackQuery):

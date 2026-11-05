@@ -48,14 +48,28 @@ async def handle_start(message: Message, state: FSMContext):
         "Browse our catalog, checkout securely via <b>UPI QR Code</b>, and receive your verified delivery directly in this chat.\n\n"
         "⚡ <i>Instant UPI Activation</i>\n"
         "🔒 <i>Direct Verified Delivery by Admin</i>\n"
-        "</blockquote>\n\n"
-        "<b>Select a service below to view details and proceed:</b>"
+        "</blockquote>"
     )
 
-    kb = get_services_keyboard(services) if services else get_main_menu_keyboard()
-    sent_msg = await message.answer(welcome_text, reply_markup=kb, parse_mode="HTML")
-    if user:
-        await set_user_last_bot_msg(user.id, sent_msg.message_id)
+    # 1. Activate the persistent bottom reply keyboard immediately!
+    await message.answer(welcome_text, reply_markup=get_main_menu_keyboard(), parse_mode="HTML")
+
+    # 2. Show the interactive services catalog inline keyboard!
+    services = await get_services()
+    if services:
+        catalog_text = (
+            "<blockquote>\n"
+            "<b>💎 SERVICES CATALOG</b>\n"
+            "Select an item below to view full details & pricing:\n"
+            "</blockquote>"
+        )
+        catalog_msg = await message.answer(
+            catalog_text,
+            reply_markup=get_services_keyboard(services),
+            parse_mode="HTML"
+        )
+        if user:
+            await set_user_last_bot_msg(user.id, catalog_msg.message_id)
 
 @start_router.message(Command("help"))
 @start_router.message(F.text.in_({"💬 Help & Support", "ℹ️ Help & Support"}))
@@ -194,6 +208,7 @@ async def handle_cancel(message: Message, state: FSMContext):
         parse_mode="HTML"
     )
 
+@start_router.message(Command("orders"))
 @start_router.message(F.text == "📦 My Orders")
 @start_router.callback_query(F.data == "view_my_orders")
 async def handle_my_orders(event: Message | CallbackQuery):

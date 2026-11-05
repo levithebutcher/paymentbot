@@ -6,7 +6,11 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="💎 View Services"), KeyboardButton(text="📦 My Orders")],
         [KeyboardButton(text="💬 Help & Support")]
     ]
-    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        is_persistent=True
+    )
 
 def get_services_keyboard(services: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
     buttons = []
