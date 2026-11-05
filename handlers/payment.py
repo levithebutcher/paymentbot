@@ -164,8 +164,8 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
     ocr_text = ""
     amount_found = False
     extracted_utr = None
-    if winocr:
-        try:
+    try:
+        if winocr:
             img = Image.open(temp_img_path)
             # Timeout winocr so it never causes lag
             res = await asyncio.wait_for(winocr.recognize_pil(img, lang="en"), timeout=2.5)
@@ -180,8 +180,8 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
             utr_match = re.search(r"\b\d{10,14}\b", ocr_text)
             if utr_match:
                 extracted_utr = utr_match.group(0)
-        except Exception as e:
-            print(f"OCR Scan warning/timeout: {e}")
+    except Exception as e:
+        print(f"OCR Scan warning/timeout: {e}")
     finally:
         if os.path.exists(temp_img_path):
             try:
