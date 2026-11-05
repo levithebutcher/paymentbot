@@ -70,6 +70,18 @@ async def init_db() -> None:
         );
         """)
 
+        # Add receipt_msg_id column to orders if not already present
+        try:
+            await conn.execute("ALTER TABLE orders ADD COLUMN receipt_msg_id INTEGER")
+        except Exception:
+            pass
+
+        # Add last_bot_msg_id column to users if not already present
+        try:
+            await conn.execute("ALTER TABLE users ADD COLUMN last_bot_msg_id INTEGER")
+        except Exception:
+            pass
+
         # Seed initial payment settings if not present
         default_settings = {
             "upi_id": config.UPI_ID,
@@ -238,6 +250,43 @@ async def get_order_by_message(message_id: int, chat_id: int) -> Optional[Dict[s
             if row:
                 return await get_order(row["order_id"])
             return None
+
+async def save_order_receipt_msg(order_id: str, message_id: int) -> None:
+    """Store customer's temporary receipt message ID for auto-cleanup upon delivery."""
+    async with get_connection() as conn:
+        await conn.execute("UPDATE orders SET receipt_msg_id = ? WHERE order_id = ?", (message_id, order_id))
+        await conn.commit()
+
+async def set_user_last_bot_msg(user_id: int, message_id: int) -> None:
+    """Track the most recent bot menu / checkout message in user's chat for spotless cleanup."""
+    async with get_connection() as conn:
+        await conn.execute("UPDATE users SET last_bot_msg_id = ? WHERE user_id = ?", (message_id, user_id))
+        await conn.commit()
+
+async def get_user_last_bot_msg(user_id: int) -> Optional[int]:
+    """Retrieve the most recent bot menu / checkout message in user's chat."""
+    async with get_connection() as conn:
+        async with conn.execute("SELECT last_bot_msg_id FROM users WHERE user_id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+            if row:
+                return row["last_bot_msg_id"]
+            return None
+
+async def get_admin_order_messages(order_id: str) -> List[Dict[str, int]]:
+    """Get all admin card messages (message_id, chat_id) across groups & DMs for an order."""
+    async with get_connection() as conn:
+        async with conn.execute(
+            "SELECT message_id, chat_id FROM order_messages WHERE order_id = ?",
+            (order_id,)
+        ) as cur:
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+async def delete_admin_order_messages(order_id: str) -> None:
+    """Clear order message records after deletion."""
+    async with get_connection() as conn:
+        await conn.execute("DELETE FROM order_messages WHERE order_id = ?", (order_id,))
+        await conn.commit()
 
 async def approve_order(order_id: str, admin_id: int) -> Optional[Dict[str, Any]]:
     """Marks order as COMPLETED and returns order info with delivery content."""

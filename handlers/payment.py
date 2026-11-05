@@ -17,7 +17,10 @@ from database import (
     submit_order_proof,
     get_order,
     get_setting,
-    save_admin_order_message
+    save_admin_order_message,
+    save_order_receipt_msg,
+    get_user_last_bot_msg,
+    set_user_last_bot_msg
 )
 from states.order_states import OrderFlow
 from keyboards.user_keyboards import get_cancel_order_keyboard, get_main_menu_keyboard
@@ -71,10 +74,11 @@ async def handle_buy_service(query: CallbackQuery, state: FSMContext, bot: Bot):
     safe_payee = html.escape(upi_name)
 
     caption = (
-        f"╭── 🧾 CHECKOUT: #{order_id} ──╮\n"
-        f"│ 📌 Service: <b>{safe_title}</b>\n"
-        f"│ 💵 Total Due: <b>₹{service['price_inr']:.0f}</b>\n"
-        "╰──────────────────────────────╯\n"
+        "<blockquote>\n"
+        f"<b>🧾 CHECKOUT: #{order_id}</b>\n"
+        f"<b>Service:</b> {safe_title}\n"
+        f"<b>Total Due:</b> ₹{service['price_inr']:.0f}\n"
+        "</blockquote>\n\n"
         f"📲 <b>UPI ID:</b> <code>{upi_id}</code> <i>(Tap to copy)</i>\n"
         f"👤 <b>Payee Name:</b> {safe_payee}\n\n"
         "1. Scan the QR code above or pay to the UPI ID.\n"
@@ -113,6 +117,7 @@ async def handle_buy_service(query: CallbackQuery, state: FSMContext, bot: Bot):
 
     if sent_msg:
         await state.update_data(qr_msg_id=sent_msg.message_id)
+        await set_user_last_bot_msg(user.id, sent_msg.message_id)
 
 @payment_router.callback_query(F.data.startswith("cancel_order:"))
 async def handle_cancel_order(query: CallbackQuery, state: FSMContext):
@@ -181,12 +186,14 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
     # 2. Update Database: mark order as PENDING_VERIFICATION
     await submit_order_proof(order_id=order_id, screenshot_file_id=photo_file_id, utr=extracted_utr)
 
-    # 3. Clean up the user's QR code card (Delete it completely to keep chat spotless!)
-    if qr_msg_id:
-        try:
-            await bot.delete_message(chat_id=message.chat.id, message_id=qr_msg_id)
-        except Exception:
-            pass
+    # 3. Clean up the user's QR code card and any previous bot message above screenshot
+    last_bot_msg = await get_user_last_bot_msg(user.id)
+    for mid in {qr_msg_id, last_bot_msg}:
+        if mid:
+            try:
+                await bot.delete_message(chat_id=message.chat.id, message_id=mid)
+            except Exception:
+                pass
 
     # 4. Clear user's FSM state
     await state.clear()
@@ -197,16 +204,19 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
     safe_service = html.escape(service_title)
 
     user_receipt_text = (
-        "╭── 🧾 RECEIPT RECEIVED ────────╮\n"
-        f"│ 🧾 Order: <code>#{order_id}</code>\n"
-        f"│ 📌 Service: <b>{safe_service}</b>\n"
-        f"│ 💰 Amount: <b>₹{price:.0f}</b>\n"
-        "╰──────────────────────────────╯\n\n"
+        "<blockquote>\n"
+        "<b>🧾 RECEIPT RECEIVED</b>\n"
+        f"<b>Order ID:</b> <code>#{order_id}</code>\n"
+        f"<b>Service:</b> {safe_service}\n"
+        f"<b>Amount:</b> ₹{price:.0f}\n"
+        "</blockquote>\n\n"
         "⏳ <b>Under Verification</b>\n"
         "Your payment proof has been submitted to our admin team.\n"
         "Once verified, your file or access will be <b>delivered directly here in this chat!</b> 🚀"
     )
-    await message.reply(user_receipt_text, reply_markup=get_main_menu_keyboard(), parse_mode="HTML")
+    receipt_msg = await message.reply(user_receipt_text, reply_markup=get_main_menu_keyboard(), parse_mode="HTML")
+    await save_order_receipt_msg(order_id, receipt_msg.message_id)
+    await set_user_last_bot_msg(user.id, receipt_msg.message_id)
 
     # 6. Forward Verification Card to Admin:
     if amount_found:
@@ -222,18 +232,16 @@ async def handle_screenshot_upload(message: Message, state: FSMContext, bot: Bot
     safe_utr = html.escape(extracted_utr) if extracted_utr else "Not detected in scan"
 
     admin_caption_html = (
-        "🔔 <b>NEW PAYMENT RECEIVED</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🧾 <b>Order ID:</b> <code>#{order_id}</code>\n"
-        f"👤 <b>Customer:</b> {safe_name} ({safe_username})\n"
-        f"🆔 <b>Customer ID:</b> <code>{user.id}</code>\n"
-        f"📌 <b>Service:</b> {safe_service}\n"
-        f"💰 <b>Order Amount:</b> <code>₹{price:.0f}</code>\n"
-        f"🔢 <b>UTR / Ref:</b> <code>{safe_utr}</code>\n\n"
-        f"🔍 <b>Auto-Scan:</b> {ocr_badge}\n"
-        f"🕒 <b>Submitted:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "👉 <i>Action:</i> Tap <b>Send Delivery</b> to provide the file/access, or reply directly to this card!"
+        "<blockquote>\n"
+        "<b>🔔 NEW PAYMENT RECEIVED</b>\n"
+        f"<b>Order ID:</b> <code>#{order_id}</code>\n"
+        f"<b>Customer:</b> {safe_name} ({safe_username})\n"
+        f"<b>Customer ID:</b> <code>{user.id}</code>\n"
+        f"<b>Service:</b> {safe_service}\n"
+        f"<b>Amount:</b> ₹{price:.0f}\n"
+        f"<b>Scan:</b> {ocr_badge}\n"
+        "</blockquote>\n\n"
+        "👉 <i>Action: Tap Send Delivery to provide the file/access, or reply directly to this card!</i>"
     )
 
     admin_caption_plain = (

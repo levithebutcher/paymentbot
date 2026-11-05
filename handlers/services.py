@@ -19,10 +19,10 @@ async def show_services_catalog(event: Message | CallbackQuery):
         return
 
     text = (
-        "╭── 💎 SERVICES CATALOG ───────╮\n"
-        "│ Select an item below to view │\n"
-        "│ full details & pricing:      │\n"
-        "╰──────────────────────────────╯"
+        "<blockquote>\n"
+        "<b>💎 SERVICES CATALOG</b>\n"
+        "Select an item below to view full details & pricing:\n"
+        "</blockquote>"
     )
     kb = get_services_keyboard(services)
 
@@ -57,10 +57,11 @@ async def handle_select_service(query: CallbackQuery):
     safe_desc = html.escape(service['description'] or "Premium digital service.")
 
     text = (
-        f"╭── 💎 {safe_title}\n"
-        f"│ 💵 Price: <b>₹{service['price_inr']:.0f}</b>\n"
-        "╰──────────────────────────────╯\n"
-        f"{safe_desc}\n\n"
+        "<blockquote>\n"
+        f"<b>💎 {safe_title}</b>\n"
+        f"<b>Price:</b> ₹{service['price_inr']:.0f}\n"
+        f"<b>Details:</b> {safe_desc}\n"
+        "</blockquote>\n\n"
         "<i>Tap 'Proceed to Payment' to generate your UPI QR Code.</i>"
     )
 

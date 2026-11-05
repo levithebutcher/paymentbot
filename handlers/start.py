@@ -3,7 +3,13 @@ from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
-from database import upsert_user, get_services, get_user_orders
+from database import (
+    upsert_user,
+    get_services,
+    get_user_orders,
+    get_user_last_bot_msg,
+    set_user_last_bot_msg
+)
 from keyboards.user_keyboards import (
     get_main_menu_keyboard,
     get_services_keyboard,
@@ -18,38 +24,41 @@ async def handle_start(message: Message, state: FSMContext):
     user = message.from_user
     if user:
         await upsert_user(user.id, user.username, user.full_name)
+        # Delete any previous bot menu/prompt to keep chat spotless
+        prev_msg_id = await get_user_last_bot_msg(user.id)
+        if prev_msg_id:
+            try:
+                await message.bot.delete_message(chat_id=user.id, message_id=prev_msg_id)
+            except Exception:
+                pass
 
     first_name = html.escape(user.first_name if user else "Member")
+    services = await get_services()
     welcome_text = (
-        "╭──────────────────────────────╮\n"
-        "│     ✦ DIGITAL SERVICES STORE ✦    │\n"
-        "╰──────────────────────────────╯\n"
+        "<blockquote>\n"
+        "<b>✦ DIGITAL SERVICES STORE ✦</b>\n"
         f"Welcome, <b>{first_name}</b>!\n\n"
         "Browse our catalog, checkout securely via <b>UPI QR Code</b>, and receive your verified delivery directly in this chat.\n\n"
         "⚡ <i>Instant UPI Activation</i>\n"
-        "🔒 <i>Direct Verified Delivery by Admin</i>"
+        "🔒 <i>Direct Verified Delivery by Admin</i>\n"
+        "</blockquote>\n\n"
+        "<b>Select a service below to view details and proceed:</b>"
     )
 
-    await message.answer(welcome_text, reply_markup=get_main_menu_keyboard(), parse_mode="HTML")
-
-    services = await get_services()
-    if services:
-        await message.answer(
-            "╭── 💎 AVAILABLE SERVICES ─────╮\n"
-            "│ Select an item to view info: │\n"
-            "╰──────────────────────────────╯",
-            reply_markup=get_services_keyboard(services),
-            parse_mode="HTML"
-        )
+    kb = get_services_keyboard(services) if services else get_main_menu_keyboard()
+    sent_msg = await message.answer(welcome_text, reply_markup=kb, parse_mode="HTML")
+    if user:
+        await set_user_last_bot_msg(user.id, sent_msg.message_id)
 
 @start_router.message(Command("help"))
 @start_router.message(F.text.in_({"💬 Help & Support", "ℹ️ Help & Support"}))
 async def handle_help(message: Message):
     help_text = (
-        "╭── 💬 HOW TO ORDER & PAY ─────╮\n"
-        "│ Follow these 4 simple steps: │\n"
-        "╰──────────────────────────────╯\n\n"
-        "1. <b>Choose Service:</b> Tap <i>💎 View Services</i> and pick your desired item.\n"
+        "<blockquote>\n"
+        "<b>💬 HOW TO ORDER & PAY</b>\n"
+        "Follow these 4 simple steps:\n"
+        "</blockquote>\n\n"
+        "1. <b>Choose Service:</b> Tap a service from the catalog below.\n"
         "2. <b>Make Payment:</b> Scan the UPI QR Code or copy our UPI ID.\n"
         "3. <b>Send Screenshot:</b> Upload your payment receipt screenshot here.\n"
         "4. <b>Receive Delivery:</b> Our admin verifies the payment and delivers your file or access directly in this chat!\n\n"
@@ -92,15 +101,17 @@ async def handle_my_orders(event: Message | CallbackQuery):
 
     if not orders:
         text = (
-            "╭── 📦 YOUR ORDERS ────────────╮\n"
-            "│ No orders found yet.         │\n"
-            "╰──────────────────────────────╯\n"
+            "<blockquote>\n"
+            "<b>📦 YOUR ORDERS</b>\n"
+            "No orders found yet.\n"
+            "</blockquote>\n\n"
             "Browse our catalog to make your first purchase!"
         )
     else:
         text = (
-            "╭── 📦 RECENT ORDERS ──────────╮\n"
-            "╰──────────────────────────────╯\n\n"
+            "<blockquote>\n"
+            "<b>📦 YOUR RECENT ORDERS</b>\n"
+            "</blockquote>\n\n"
         )
         for o in orders:
             status = o['status']

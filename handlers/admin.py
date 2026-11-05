@@ -27,7 +27,9 @@ from database import (
     get_connection,
     get_setting,
     set_setting,
-    get_order_by_message
+    get_order_by_message,
+    get_admin_order_messages,
+    delete_admin_order_messages
 )
 from states.order_states import (
     AddServiceFlow,
@@ -90,18 +92,20 @@ async def handle_admin_deliver_flow_start(query: CallbackQuery, state: FSMContex
 
     safe_title = html.escape(order["service_title"])
     prompt_text = (
-        "╭── 📤 ORDER DELIVERY ─────────╮\n"
-        f"│ 🧾 Order: <code>#{order_id}</code>\n"
-        f"│ 👤 Customer ID: <code>{order['user_id']}</code>\n"
-        f"│ 📌 Service: <b>{safe_title}</b>\n"
-        "╰──────────────────────────────╯\n\n"
+        "<blockquote>\n"
+        "<b>📤 ORDER DELIVERY</b>\n"
+        f"<b>Order ID:</b> <code>#{order_id}</code>\n"
+        f"<b>Customer ID:</b> <code>{order['user_id']}</code>\n"
+        f"<b>Service:</b> {safe_title}\n"
+        "</blockquote>\n\n"
         "👉 <b>Send the delivery file or content now:</b>\n"
-        "• Send a Document (PDF, ZIP, APK, file, etc.)\n"
+        "• Send a Document (PDF, ZIP, APK, etc.)\n"
         "• Or send a Photo / Video\n"
         "• Or send a Text message / Access link\n\n"
         "<i>The bot will forward it directly to this customer!</i>"
     )
-    await query.message.reply(prompt_text, reply_markup=get_cancel_delivery_keyboard(), parse_mode="HTML")
+    prompt_msg = await query.message.reply(prompt_text, reply_markup=get_cancel_delivery_keyboard(), parse_mode="HTML")
+    await state.update_data(prompt_msg_id=prompt_msg.message_id)
 
 @admin_router.callback_query(F.data == "admin_cancel_delivery")
 async def handle_admin_cancel_delivery(query: CallbackQuery, state: FSMContext):
@@ -121,20 +125,28 @@ async def handle_admin_send_delivery(message: Message, state: FSMContext, bot: B
     order_id = data.get("order_id")
     buyer_id = data.get("buyer_id")
     service_title = data.get("service_title", "Service")
-    card_msg_id = data.get("card_msg_id")
-    card_chat_id = data.get("card_chat_id")
+    prompt_msg_id = data.get("prompt_msg_id")
 
     if not order_id or not buyer_id:
         await state.clear()
         await message.reply("⚠️ Delivery session expired. Please tap 'Send Delivery' on the order card again.")
         return
 
+    # Delete buyer's temporary "Receipt Received / Under Verification" message
+    order = await get_order(order_id)
+    if order and order.get("receipt_msg_id"):
+        try:
+            await bot.delete_message(chat_id=buyer_id, message_id=order["receipt_msg_id"])
+        except Exception:
+            pass
+
     safe_title = html.escape(service_title)
     delivery_header = (
-        "╭── 🎉 ORDER DELIVERED ────────╮\n"
-        f"│ 🧾 Order ID: <code>#{order_id}</code>\n"
-        f"│ 📌 Service: <b>{safe_title}</b>\n"
-        "╰──────────────────────────────╯\n"
+        "<blockquote>\n"
+        "<b>🎉 ORDER DELIVERED</b>\n"
+        f"<b>Order ID:</b> <code>#{order_id}</code>\n"
+        f"<b>Service:</b> {safe_title}\n"
+        "</blockquote>\n\n"
         "🎁 <b>Here is your purchase delivery:</b>"
     )
 
@@ -155,19 +167,26 @@ async def handle_admin_send_delivery(message: Message, state: FSMContext, bot: B
     await approve_order(order_id, message.from_user.id)
     await state.clear()
 
-    admin_name = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+    # Delete prompt message asking for file
+    if prompt_msg_id:
+        try:
+            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_msg_id)
+        except Exception:
+            pass
+
+    # DELETE the approval card from BOTH group and admin DM!
+    admin_msgs = await get_admin_order_messages(order_id)
+    for am in admin_msgs:
+        try:
+            await bot.delete_message(chat_id=am["chat_id"], message_id=am["message_id"])
+        except Exception:
+            pass
+    await delete_admin_order_messages(order_id)
+
     await message.reply(
-        f"✅ <b>Order #{order_id} successfully delivered to customer ({buyer_id})!</b>\n"
-        "Order status updated to <code>COMPLETED</code>.",
+        f"✅ <b>Order #{order_id} delivered & approval cards cleared!</b>",
         parse_mode="HTML"
     )
-
-    # Update admin card to remove buttons
-    if card_msg_id and card_chat_id:
-        try:
-            await bot.edit_message_reply_markup(chat_id=card_chat_id, message_id=card_msg_id, reply_markup=None)
-        except Exception as e:
-            print(f"Could not update card markup: {e}")
 
 @admin_router.callback_query(F.data.startswith("admin_reject:"))
 async def handle_admin_direct_reject(query: CallbackQuery, bot: Bot):
@@ -229,12 +248,19 @@ async def handle_admin_direct_reject(query: CallbackQuery, bot: Bot):
             print(f"Fallback caption edit failed: {e2}")
 
     user_id = order["user_id"]
+    if order.get("receipt_msg_id"):
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=order["receipt_msg_id"])
+        except Exception:
+            pass
+
     user_rejection_text = (
-        "╭── ❌ VERIFICATION FAILED ────╮\n"
-        f"│ 🧾 Order: <code>#{order_id}</code>\n"
-        f"│ 📌 Service: <b>{html.escape(order['service_title'])}</b>\n"
-        "╰──────────────────────────────╯\n\n"
-        f"⚠️ <b>Reason:</b> <i>{safe_reason}</i>\n\n"
+        "<blockquote>\n"
+        "<b>❌ VERIFICATION FAILED</b>\n"
+        f"<b>Order ID:</b> <code>#{order_id}</code>\n"
+        f"<b>Service:</b> {html.escape(order['service_title'])}\n"
+        f"<b>Reason:</b> {safe_reason}\n"
+        "</blockquote>\n\n"
         "• Please verify in your UPI app that the payment went through.\n"
         "• Ensure you uploaded an uncropped, clear transaction receipt.\n"
         "• Tap below to try again or contact support."
@@ -250,6 +276,15 @@ async def handle_admin_direct_reject(query: CallbackQuery, bot: Bot):
         )
     except Exception as e:
         print(f"Could not send rejection message to user {user_id}: {e}")
+
+    # Clear approval cards from group and DM
+    admin_msgs = await get_admin_order_messages(order_id)
+    for am in admin_msgs:
+        try:
+            await bot.delete_message(chat_id=am["chat_id"], message_id=am["message_id"])
+        except Exception:
+            pass
+    await delete_admin_order_messages(order_id)
 
 @admin_router.callback_query(F.data.startswith("admin_reject_menu:"))
 async def handle_admin_reject_menu(query: CallbackQuery):
@@ -327,12 +362,19 @@ async def handle_admin_reject_reason(query: CallbackQuery, bot: Bot):
             print(f"Fallback caption edit failed: {e2}")
 
     user_id = order["user_id"]
+    if order.get("receipt_msg_id"):
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=order["receipt_msg_id"])
+        except Exception:
+            pass
+
     user_rejection_text = (
-        "╭── ❌ VERIFICATION FAILED ────╮\n"
-        f"│ 🧾 Order: <code>#{order_id}</code>\n"
-        f"│ 📌 Service: <b>{html.escape(order['service_title'])}</b>\n"
-        "╰──────────────────────────────╯\n\n"
-        f"⚠️ <b>Reason:</b> <i>{safe_reason}</i>\n\n"
+        "<blockquote>\n"
+        "<b>❌ VERIFICATION FAILED</b>\n"
+        f"<b>Order ID:</b> <code>#{order_id}</code>\n"
+        f"<b>Service:</b> {html.escape(order['service_title'])}\n"
+        f"<b>Reason:</b> {safe_reason}\n"
+        "</blockquote>\n\n"
         "• Please verify in your UPI app that the payment went through.\n"
         "• Ensure you uploaded an uncropped, clear transaction receipt.\n"
         "• Tap below to try again or contact support."
@@ -348,6 +390,15 @@ async def handle_admin_reject_reason(query: CallbackQuery, bot: Bot):
         )
     except Exception as e:
         print(f"Could not send rejection message to user {user_id}: {e}")
+
+    # Clear approval cards from group and DM
+    admin_msgs = await get_admin_order_messages(order_id)
+    for am in admin_msgs:
+        try:
+            await bot.delete_message(chat_id=am["chat_id"], message_id=am["message_id"])
+        except Exception:
+            pass
+    await delete_admin_order_messages(order_id)
 
 @admin_router.message(F.reply_to_message)
 async def handle_admin_reply_delivery(message: Message, bot: Bot):
@@ -371,23 +422,32 @@ async def handle_admin_reply_delivery(message: Message, bot: Bot):
     user_id = order["user_id"]
     order_id = order["order_id"]
 
-    intro = (
-        "🎉 **PAYMENT VERIFIED & ORDER DELIVERED!**\n\n"
-        f"🧾 **Order ID:** `#{order_id}`\n"
-        f"📌 **Service:** {order['service_title']}\n"
-        f"💰 **Amount Paid:** ₹{order['amount']:.0f}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "🎁 **Here is your delivery file / access content from our admin:**\n"
-        "━━━━━━━━━━━━━━━━━━━━"
+    # Delete buyer's temporary "Receipt Received / Under Verification" message
+    if order.get("receipt_msg_id"):
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=order["receipt_msg_id"])
+        except Exception:
+            pass
+
+    safe_title = html.escape(order["service_title"])
+    delivery_header = (
+        "<blockquote>\n"
+        "<b>🎉 ORDER DELIVERED</b>\n"
+        f"<b>Order ID:</b> <code>#{order_id}</code>\n"
+        f"<b>Service:</b> {safe_title}\n"
+        "</blockquote>\n\n"
+        "🎁 <b>Here is your purchase delivery:</b>"
     )
 
     try:
-        try:
-            await bot.send_message(chat_id=user_id, text=intro, parse_mode="Markdown")
-        except Exception:
-            await bot.send_message(chat_id=user_id, text=intro)
+        await bot.send_message(chat_id=user_id, text=delivery_header, parse_mode="HTML")
         # Copy the exact admin message (Document, Photo, Audio, Video, or Text) directly to the buyer!
         await message.copy_to(chat_id=user_id)
+        await bot.send_message(
+            chat_id=user_id,
+            text="🙏 <i>Thank you for your purchase! Feel free to reach out if you have any questions.</i>",
+            parse_mode="HTML"
+        )
     except Exception as e:
         await message.reply(f"⚠️ Could not deliver message to user {user_id}: {e}")
         return
@@ -395,19 +455,19 @@ async def handle_admin_reply_delivery(message: Message, bot: Bot):
     # Mark order as completed
     await approve_order(order_id, message.from_user.id)
 
-    admin_name = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
-    reply_confirm = (
-        f"✅ **Delivered successfully to customer!**\n\n"
-        f"👤 Customer: {order['full_name']} (@{order['username']})\n"
-        f"🆔 Customer ID: `{user_id}`\n"
-        f"🧾 Order ID: `#{order_id}`\n"
-        f"👮 Verified by: {admin_name}\n\n"
-        "Order status updated to **COMPLETED**."
+    # DELETE the approval card from BOTH group and admin DM!
+    admin_msgs = await get_admin_order_messages(order_id)
+    for am in admin_msgs:
+        try:
+            await bot.delete_message(chat_id=am["chat_id"], message_id=am["message_id"])
+        except Exception:
+            pass
+    await delete_admin_order_messages(order_id)
+
+    await message.reply(
+        f"✅ <b>Order #{order_id} delivered & approval cards cleared!</b>",
+        parse_mode="HTML"
     )
-    try:
-        await message.reply(reply_confirm, parse_mode="Markdown")
-    except Exception:
-        await message.reply(reply_confirm)
 
 # ==========================================
 # 2. INTERACTIVE ADMIN DASHBOARD & NAVIGATION
@@ -437,12 +497,15 @@ async def handle_set_group(message: Message):
     except Exception as e:
         print(f"Could not persist ADMIN_GROUP_ID to .env: {e}")
 
+    safe_group_title = html.escape(message.chat.title or "Admin Group")
     await message.reply(
-        "✅ **Admin Verification Group Registered!**\n\n"
-        f"🏷️ **Group Title:** {message.chat.title}\n"
-        f"🆔 **Group ID:** `{group_id}`\n\n"
-        "All customer payment verification requests will now appear in this group with [Approve] and [Reject] buttons.",
-        parse_mode="Markdown"
+        "<blockquote>\n"
+        "<b>✅ ADMIN GROUP REGISTERED</b>\n"
+        f"<b>Title:</b> {safe_group_title}\n"
+        f"<b>ID:</b> <code>{group_id}</code>\n"
+        "</blockquote>\n\n"
+        "All customer payment verification requests will now appear in this group with interactive delivery and rejection options.",
+        parse_mode="HTML"
     )
 
 @admin_router.message(Command("admin"))
@@ -454,15 +517,16 @@ async def handle_admin_panel(message: Message, state: FSMContext):
         return
 
     upi_id = await get_setting("upi_id", config.UPI_ID)
+    upi_name = await get_setting("upi_name", config.UPI_NAME)
     text = (
-        "🛠️ **ADMIN CONTROL DASHBOARD**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📲 **Current Active UPI:** `{upi_id}`\n\n"
-        "👇 **Select an option to manage:**\n"
-        "1️⃣ **Payment Method & QR Code** — Change UPI ID or QR image\n"
-        "2️⃣ **Services Catalog** — Add/edit services, pricing & delivery links"
+        "<blockquote>\n"
+        "<b>🛠️ STORE ADMIN CONTROL PANEL</b>\n"
+        f"<b>Active UPI:</b> <code>{upi_id}</code>\n"
+        f"<b>Payee Name:</b> {html.escape(upi_name)}\n"
+        "</blockquote>\n\n"
+        "Select a section below to configure your store:"
     )
-    await message.reply(text, reply_markup=get_admin_dashboard_keyboard(), parse_mode="Markdown")
+    await message.reply(text, reply_markup=get_admin_dashboard_keyboard(), parse_mode="HTML")
 
 @admin_router.callback_query(F.data == "admin_nav:dashboard")
 async def nav_dashboard(query: CallbackQuery, state: FSMContext):
@@ -473,15 +537,19 @@ async def nav_dashboard(query: CallbackQuery, state: FSMContext):
 
     await query.answer()
     upi_id = await get_setting("upi_id", config.UPI_ID)
+    upi_name = await get_setting("upi_name", config.UPI_NAME)
     text = (
-        "🛠️ **ADMIN CONTROL DASHBOARD**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📲 **Current Active UPI:** `{upi_id}`\n\n"
-        "👇 **Select an option to manage:**\n"
-        "1️⃣ **Payment Method & QR Code** — Change UPI ID or QR image\n"
-        "2️⃣ **Services Catalog** — Add/edit services, pricing & delivery links"
+        "<blockquote>\n"
+        "<b>🛠️ STORE ADMIN CONTROL PANEL</b>\n"
+        f"<b>Active UPI:</b> <code>{upi_id}</code>\n"
+        f"<b>Payee Name:</b> {html.escape(upi_name)}\n"
+        "</blockquote>\n\n"
+        "Select a section below to configure your store:"
     )
-    await query.message.edit_text(text, reply_markup=get_admin_dashboard_keyboard(), parse_mode="Markdown")
+    try:
+        await query.message.edit_text(text, reply_markup=get_admin_dashboard_keyboard(), parse_mode="HTML")
+    except Exception:
+        await query.message.answer(text, reply_markup=get_admin_dashboard_keyboard(), parse_mode="HTML")
 
 # ==========================================
 # PAYMENT SETTINGS MANAGEMENT (UPI & QR)
@@ -498,18 +566,21 @@ async def nav_payment_settings(query: CallbackQuery, state: FSMContext):
     upi_id = await get_setting("upi_id", config.UPI_ID)
     upi_name = await get_setting("upi_name", config.UPI_NAME)
     qr_path = await get_setting("qr_image_path", config.QR_IMAGE_PATH)
-    qr_exists = "✅ File Active" if os.path.exists(qr_path) else "⚠️ File Missing"
+    qr_exists = "Active" if os.path.exists(qr_path) else "Missing"
 
     text = (
-        "💳 **PAYMENT METHODS & QR SETTINGS**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📲 **UPI ID:** `{upi_id}`\n"
-        f"👤 **Payee Name:** {upi_name}\n"
-        f"🖼️ **QR Image:** {qr_exists} (`{qr_path}`)\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "<blockquote>\n"
+        "<b>💳 PAYMENT & QR SETTINGS</b>\n"
+        f"<b>UPI ID:</b> <code>{upi_id}</code>\n"
+        f"<b>Payee Name:</b> {html.escape(upi_name)}\n"
+        f"<b>QR Image:</b> {qr_exists}\n"
+        "</blockquote>\n\n"
         "Select what you want to update:"
     )
-    await query.message.edit_text(text, reply_markup=get_payment_settings_keyboard(), parse_mode="Markdown")
+    try:
+        await query.message.edit_text(text, reply_markup=get_payment_settings_keyboard(), parse_mode="HTML")
+    except Exception:
+        await query.message.answer(text, reply_markup=get_payment_settings_keyboard(), parse_mode="HTML")
 
 @admin_router.callback_query(F.data == "admin_pay:change_upi")
 async def start_change_upi(query: CallbackQuery, state: FSMContext):
@@ -520,17 +591,19 @@ async def start_change_upi(query: CallbackQuery, state: FSMContext):
     await state.set_state(EditPaymentFlow.waiting_for_upi_id)
     await query.answer()
     text = (
-        "🔄 **CHANGE UPI ID**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Please send the new UPI ID (e.g. `yourname@okhdfcbank` or `9876543210@upi`):"
+        "<blockquote>\n"
+        "<b>🔄 CHANGE UPI ID</b>\n"
+        "Please send the new UPI ID below:\n"
+        "e.g. <code>yourname@okhdfcbank</code> or <code>9876543210@upi</code>\n"
+        "</blockquote>"
     )
-    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
 @admin_router.message(EditPaymentFlow.waiting_for_upi_id, F.text)
 async def finish_change_upi(message: Message, state: FSMContext):
     new_upi = message.text.strip()
     if "@" not in new_upi or len(new_upi) < 5:
-        await message.reply("⚠️ Invalid UPI ID format. It should look like `username@bank` or `number@upi`. Please try again:")
+        await message.reply("⚠️ Invalid UPI ID format. It should look like <code>username@bank</code> or <code>number@upi</code>. Please try again:", parse_mode="HTML")
         return
 
     await set_setting("upi_id", new_upi)
@@ -552,9 +625,13 @@ async def finish_change_upi(message: Message, state: FSMContext):
 
     await state.clear()
     await message.reply(
-        f"✅ **UPI ID updated successfully!**\nNew UPI ID: `{new_upi}`\n\nAll future customer orders will now display this UPI ID.",
+        "<blockquote>\n"
+        "<b>✅ UPI ID UPDATED</b>\n"
+        f"<b>New UPI ID:</b> <code>{html.escape(new_upi)}</code>\n"
+        "All future customer orders will now display this UPI ID.\n"
+        "</blockquote>",
         reply_markup=get_admin_dashboard_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 @admin_router.callback_query(F.data == "admin_pay:change_name")
@@ -566,11 +643,13 @@ async def start_change_name(query: CallbackQuery, state: FSMContext):
     await state.set_state(EditPaymentFlow.waiting_for_payee_name)
     await query.answer()
     text = (
-        "👤 **CHANGE PAYEE / MERCHANT NAME**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Please send the new Payee Name (e.g. `My Store` or `John Doe`):"
+        "<blockquote>\n"
+        "<b>👤 CHANGE PAYEE NAME</b>\n"
+        "Please send the new Payee / Merchant Name:\n"
+        "e.g. <code>My Store</code> or <code>John Doe</code>\n"
+        "</blockquote>"
     )
-    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
 @admin_router.message(EditPaymentFlow.waiting_for_payee_name, F.text)
 async def finish_change_name(message: Message, state: FSMContext):
@@ -579,9 +658,12 @@ async def finish_change_name(message: Message, state: FSMContext):
     config.UPI_NAME = new_name
     await state.clear()
     await message.reply(
-        f"✅ **Payee Name updated successfully!**\nNew Name: **{new_name}**",
+        "<blockquote>\n"
+        "<b>✅ PAYEE NAME UPDATED</b>\n"
+        f"<b>New Name:</b> {html.escape(new_name)}\n"
+        "</blockquote>",
         reply_markup=get_admin_dashboard_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 @admin_router.callback_query(F.data == "admin_pay:change_qr")
@@ -593,12 +675,13 @@ async def start_change_qr(query: CallbackQuery, state: FSMContext):
     await state.set_state(EditPaymentFlow.waiting_for_qr_photo)
     await query.answer()
     text = (
-        "🖼️ **UPLOAD NEW QR CODE IMAGE**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Please send the new QR code image as a **photo** in this chat.\n\n"
-        "✨ *Note: The bot will automatically add clean white edge padding so no corners or edges get cut off on mobile screens.*"
+        "<blockquote>\n"
+        "<b>🖼️ UPLOAD NEW QR CODE</b>\n"
+        "Please upload the new QR code image as a photo.\n"
+        "<i>Clean white edge padding will be automatically added for mobile clarity.</i>\n"
+        "</blockquote>"
     )
-    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
 @admin_router.message(EditPaymentFlow.waiting_for_qr_photo, F.photo)
 async def finish_change_qr(message: Message, state: FSMContext, bot: Bot):
@@ -621,11 +704,13 @@ async def finish_change_qr(message: Message, state: FSMContext, bot: Bot):
         await state.clear()
 
         await message.reply(
-            "✅ **QR Code image updated successfully!**\n\n"
-            "Clean edge padding has been applied to ensure clear scannability on all devices. "
-            "All new customer payment orders will now display this QR code image.",
+            "<blockquote>\n"
+            "<b>✅ QR CODE UPDATED</b>\n"
+            "Clean edge padding has been applied for mobile scannability.\n"
+            "All new orders will now display this QR code image.\n"
+            "</blockquote>",
             reply_markup=get_admin_dashboard_keyboard(),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     except Exception as e:
         await message.reply(f"⚠️ Failed to process image: {e}. Please try uploading again:")
@@ -665,19 +750,19 @@ async def nav_stats(query: CallbackQuery):
             rejected_count = (await cur.fetchone())["rejected"] or 0
 
     stats_text = (
-        "📊 **BOT LIVE ANALYTICS**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 **Total Registered Users:** {users_count}\n"
-        f"⏳ **Pending Verifications:** {pending_count}\n"
-        f"✅ **Completed Orders:** {completed_count}\n"
-        f"❌ **Rejected Orders:** {rejected_count}\n"
-        f"💰 **Total Approved Revenue:** ₹{revenue:,.2f}\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚙️ **Admin Group ID:** `{config.ADMIN_GROUP_ID}`\n"
-        f"📲 **Configured UPI ID:** `{config.UPI_ID}`\n"
+        "<blockquote>\n"
+        "<b>📊 BOT LIVE ANALYTICS</b>\n"
+        f"<b>Registered Users:</b> {users_count}\n"
+        f"<b>Pending Orders:</b> {pending_count}\n"
+        f"<b>Completed Orders:</b> {completed_count}\n"
+        f"<b>Rejected Orders:</b> {rejected_count}\n"
+        f"<b>Total Approved Revenue:</b> ₹{revenue:,.2f}\n"
+        "</blockquote>\n\n"
+        f"⚙️ <b>Admin Group ID:</b> <code>{config.ADMIN_GROUP_ID}</code>\n"
+        f"📲 <b>Configured UPI ID:</b> <code>{config.UPI_ID}</code>"
     )
     kb = get_admin_dashboard_keyboard()
-    await query.message.edit_text(stats_text, reply_markup=kb, parse_mode="Markdown")
+    await query.message.edit_text(stats_text, reply_markup=kb, parse_mode="HTML")
 
 # ==========================================
 # 3. SERVICE CATALOG MANAGEMENT
@@ -693,13 +778,14 @@ async def nav_manage_services(query: CallbackQuery, state: FSMContext):
     await query.answer()
     services = await get_services(active_only=False)
     text = (
-        "📋 **SERVICES CATALOG MANAGER**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "<blockquote>\n"
+        "<b>📋 SERVICES CATALOG MANAGER</b>\n"
         "🟢 = Active (Visible to buyers)\n"
-        "🔴 = Inactive / Hidden\n\n"
-        "Click on any service below to edit its **Price, Delivery Content, Title**, or toggle visibility:"
+        "🔴 = Inactive / Hidden\n"
+        "</blockquote>\n\n"
+        "Select a service below to edit its price, title, or toggle visibility:"
     )
-    await query.message.edit_text(text, reply_markup=get_services_management_keyboard(services), parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=get_services_management_keyboard(services), parse_mode="HTML")
 
 @admin_router.callback_query(F.data.startswith("admin_svc:"))
 async def handle_service_details(query: CallbackQuery, state: FSMContext):
@@ -713,19 +799,20 @@ async def handle_service_details(query: CallbackQuery, state: FSMContext):
 
     await query.answer()
     status_str = "🟢 Active (Visible)" if service["is_active"] == 1 else "🔴 Inactive (Hidden)"
+    safe_title = html.escape(service['title'])
+    safe_desc = html.escape(service['description'] or "")
     text = (
-        f"🏷️ **SERVICE DETAILS: {service['title']}**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 **ID:** `{service['service_id']}`\n"
-        f"💰 **Price:** ₹{service['price_inr']:.0f}\n"
-        f"📶 **Status:** {status_str}\n\n"
-        f"📝 **Description:**\n{service['description']}\n\n"
-        f"🎁 **Delivery Content / Link:**\n`{service['delivery_content']}`\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Choose an action to modify this service:"
+        "<blockquote>\n"
+        f"<b>🏷️ SERVICE: {safe_title}</b>\n"
+        f"<b>ID:</b> <code>{service['service_id']}</code>\n"
+        f"<b>Price:</b> ₹{service['price_inr']:.0f}\n"
+        f"<b>Status:</b> {status_str}\n"
+        "</blockquote>\n\n"
+        f"📝 <b>Description:</b>\n{safe_desc}\n\n"
+        "<i>Select an action below to update this service:</i>"
     )
     kb = get_service_actions_keyboard(service_id, service["is_active"])
-    await query.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 @admin_router.callback_query(F.data.startswith("svc_action:toggle:"))
 async def handle_toggle_service(query: CallbackQuery):
@@ -741,19 +828,20 @@ async def handle_toggle_service(query: CallbackQuery):
     # Refresh details view
     service = await get_service(service_id)
     status_str = "🟢 Active (Visible)" if service["is_active"] == 1 else "🔴 Inactive (Hidden)"
+    safe_title = html.escape(service['title'])
+    safe_desc = html.escape(service['description'] or "")
     text = (
-        f"🏷️ **SERVICE DETAILS: {service['title']}**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 **ID:** `{service['service_id']}`\n"
-        f"💰 **Price:** ₹{service['price_inr']:.0f}\n"
-        f"📶 **Status:** {status_str}\n\n"
-        f"📝 **Description:**\n{service['description']}\n\n"
-        f"🎁 **Delivery Content / Link:**\n`{service['delivery_content']}`\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Choose an action to modify this service:"
+        "<blockquote>\n"
+        f"<b>🏷️ SERVICE: {safe_title}</b>\n"
+        f"<b>ID:</b> <code>{service['service_id']}</code>\n"
+        f"<b>Price:</b> ₹{service['price_inr']:.0f}\n"
+        f"<b>Status:</b> {status_str}\n"
+        "</blockquote>\n\n"
+        f"📝 <b>Description:</b>\n{safe_desc}\n\n"
+        "<i>Select an action below to update this service:</i>"
     )
     kb = get_service_actions_keyboard(service_id, service["is_active"])
-    await query.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 @admin_router.callback_query(F.data.startswith("svc_action:delete:"))
 async def handle_delete_service(query: CallbackQuery):
@@ -766,12 +854,13 @@ async def handle_delete_service(query: CallbackQuery):
 
     services = await get_services(active_only=False)
     text = (
-        "📋 **SERVICES CATALOG MANAGER**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Service was updated/removed.\n\n"
+        "<blockquote>\n"
+        "<b>📋 SERVICES CATALOG MANAGER</b>\n"
+        "Service was updated/removed.\n"
+        "</blockquote>\n\n"
         "Select a service to manage:"
     )
-    await query.message.edit_text(text, reply_markup=get_services_management_keyboard(services), parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=get_services_management_keyboard(services), parse_mode="HTML")
 
 # --- EDIT PRICE FLOW ---
 @admin_router.callback_query(F.data.startswith("svc_action:price:"))
@@ -781,10 +870,12 @@ async def edit_price_start(query: CallbackQuery, state: FSMContext):
     await state.update_data(service_id=service_id)
     await query.answer()
     text = (
-        f"💰 **Edit Price for Service:** `{service_id}`\n\n"
-        "Please type and send the **new price in INR** (e.g. `249` or `499`):"
+        "<blockquote>\n"
+        f"<b>💰 EDIT PRICE:</b> <code>{service_id}</code>\n"
+        "Please type and send the new price in INR (e.g. <code>249</code> or <code>499</code>):\n"
+        "</blockquote>"
     )
-    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
 @admin_router.message(EditServiceFlow.waiting_for_new_price, F.text)
 async def edit_price_finish(message: Message, state: FSMContext):
@@ -794,7 +885,7 @@ async def edit_price_finish(message: Message, state: FSMContext):
         if new_price <= 0:
             raise ValueError
     except ValueError:
-        await message.reply("⚠️ Invalid amount. Please enter a valid positive number (e.g. `299`):")
+        await message.reply("⚠️ Invalid amount. Please enter a valid positive number (e.g. <code>299</code>):", parse_mode="HTML")
         return
 
     data = await state.get_data()
@@ -803,9 +894,12 @@ async def edit_price_finish(message: Message, state: FSMContext):
     await state.clear()
 
     await message.reply(
-        f"✅ **Price updated successfully!**\nService `{service_id}` is now priced at **₹{new_price:.0f}**.",
+        "<blockquote>\n"
+        "<b>✅ PRICE UPDATED</b>\n"
+        f"Service <code>{service_id}</code> is now priced at <b>₹{new_price:.0f}</b>.\n"
+        "</blockquote>",
         reply_markup=get_admin_dashboard_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 # --- EDIT DELIVERY CONTENT FLOW ---
@@ -816,10 +910,12 @@ async def edit_delivery_start(query: CallbackQuery, state: FSMContext):
     await state.update_data(service_id=service_id)
     await query.answer()
     text = (
-        f"🎁 **Edit Delivery Content for Service:** `{service_id}`\n\n"
-        "Please send the new invite link, file URL, or instructions that will be delivered to the buyer upon payment approval:"
+        "<blockquote>\n"
+        f"<b>🎁 EDIT DELIVERY CONTENT:</b> <code>{service_id}</code>\n"
+        "Please send the new delivery link, text, or instructions:\n"
+        "</blockquote>"
     )
-    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
 @admin_router.message(EditServiceFlow.waiting_for_new_delivery, F.text)
 async def edit_delivery_finish(message: Message, state: FSMContext):
@@ -830,9 +926,12 @@ async def edit_delivery_finish(message: Message, state: FSMContext):
     await state.clear()
 
     await message.reply(
-        f"✅ **Delivery content updated successfully!**\nNew content for `{service_id}`:\n\n{new_delivery}",
+        "<blockquote>\n"
+        "<b>✅ DELIVERY CONTENT UPDATED</b>\n"
+        f"Service: <code>{service_id}</code>\n"
+        "</blockquote>",
         reply_markup=get_admin_dashboard_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 # --- EDIT TITLE FLOW ---
@@ -843,10 +942,12 @@ async def edit_title_start(query: CallbackQuery, state: FSMContext):
     await state.update_data(service_id=service_id)
     await query.answer()
     text = (
-        f"📝 **Edit Title for Service:** `{service_id}`\n\n"
-        "Please send the new display title for this service (e.g. `💎 VIP Signals (Lifetime)`):"
+        "<blockquote>\n"
+        f"<b>📝 EDIT TITLE:</b> <code>{service_id}</code>\n"
+        "Please send the new display title for this service:\n"
+        "</blockquote>"
     )
-    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
 @admin_router.message(EditServiceFlow.waiting_for_new_title, F.text)
 async def edit_title_finish(message: Message, state: FSMContext):
@@ -857,9 +958,12 @@ async def edit_title_finish(message: Message, state: FSMContext):
     await state.clear()
 
     await message.reply(
-        f"✅ **Title updated successfully!**\nNew Title: **{new_title}**",
+        "<blockquote>\n"
+        "<b>✅ TITLE UPDATED</b>\n"
+        f"<b>New Title:</b> {html.escape(new_title)}\n"
+        "</blockquote>",
         reply_markup=get_admin_dashboard_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 # ==========================================
@@ -875,9 +979,10 @@ async def add_service_step1(query: CallbackQuery, state: FSMContext):
     await state.set_state(AddServiceFlow.waiting_for_title)
     await query.answer()
     text = (
-        "╭── ➕ ADD NEW SERVICE (1/3) ──╮\n"
-        "╰──────────────────────────────╯\n"
-        "Send the <b>Service Title</b> (e.g. <code>💎 VIP Signals Channel</code>):"
+        "<blockquote>\n"
+        "<b>➕ ADD NEW SERVICE (Step 1 of 3)</b>\n"
+        "Send the <b>Service Title</b> (e.g. <code>💎 VIP Signals Channel</code>):\n"
+        "</blockquote>"
     )
     await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
@@ -887,10 +992,11 @@ async def add_service_step2(message: Message, state: FSMContext):
     await state.update_data(new_svc_title=title)
     await state.set_state(AddServiceFlow.waiting_for_description)
     text = (
-        "╭── ➕ ADD NEW SERVICE (2/3) ──╮\n"
-        "╰──────────────────────────────╯\n"
-        f"Title: <b>{html.escape(title)}</b>\n\n"
-        "Now send a short <b>Description</b> explaining the service:"
+        "<blockquote>\n"
+        "<b>➕ ADD NEW SERVICE (Step 2 of 3)</b>\n"
+        f"<b>Title:</b> {html.escape(title)}\n\n"
+        "Now send a short <b>Description</b> explaining the service:\n"
+        "</blockquote>"
     )
     await message.reply(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
@@ -900,9 +1006,10 @@ async def add_service_step3(message: Message, state: FSMContext):
     await state.update_data(new_svc_desc=desc)
     await state.set_state(AddServiceFlow.waiting_for_price)
     text = (
-        "╭── ➕ ADD NEW SERVICE (3/3) ──╮\n"
-        "╰──────────────────────────────╯\n"
-        "Send the <b>Price in INR</b> (e.g. <code>199</code> or <code>499</code>):"
+        "<blockquote>\n"
+        "<b>➕ ADD NEW SERVICE (Step 3 of 3)</b>\n"
+        "Send the <b>Price in INR</b> (e.g. <code>199</code> or <code>499</code>):\n"
+        "</blockquote>"
     )
     await message.reply(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
@@ -930,11 +1037,12 @@ async def add_service_finish(message: Message, state: FSMContext):
 
     if success:
         text = (
-            "╭── 🎉 SERVICE CREATED! ───────╮\n"
-            f"│ 🏷️ Title: <b>{html.escape(title)}</b>\n"
-            f"│ 💰 Price: <b>₹{price:.0f}</b>\n"
-            f"│ 🆔 ID: <code>{svc_id}</code>\n"
-            "╰──────────────────────────────╯\n"
+            "<blockquote>\n"
+            "<b>🎉 SERVICE CREATED!</b>\n"
+            f"<b>Title:</b> {html.escape(title)}\n"
+            f"<b>Price:</b> ₹{price:.0f}\n"
+            f"<b>ID:</b> <code>{svc_id}</code>\n"
+            "</blockquote>\n\n"
             "This item is now live in the store catalog for all customers!"
         )
     else:
@@ -955,14 +1063,14 @@ async def broadcast_start(query: CallbackQuery, state: FSMContext):
     await state.set_state(BroadcastFlow.waiting_for_content)
     await query.answer()
     text = (
-        "📢 **BROADCAST ANNOUNCEMENT TO ALL USERS**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Send the message you want to broadcast.\n\n"
-        "• You can send **plain text**.\n"
-        "• Or send a **photo with a caption**.\n\n"
-        "Before sending, bot will show you a preview and ask for confirmation."
+        "<blockquote>\n"
+        "<b>📢 BROADCAST ANNOUNCEMENT</b>\n"
+        "Send the message you want to broadcast to all registered users.\n"
+        "• You can send <b>plain text</b> or a <b>photo with caption</b>.\n"
+        "<i>You will receive a preview before confirmation.</i>\n"
+        "</blockquote>"
     )
-    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="Markdown")
+    await query.message.edit_text(text, reply_markup=get_cancel_admin_flow_keyboard(), parse_mode="HTML")
 
 @admin_router.message(BroadcastFlow.waiting_for_content, F.photo)
 async def broadcast_receive_photo(message: Message, state: FSMContext):
@@ -979,17 +1087,18 @@ async def broadcast_receive_photo(message: Message, state: FSMContext):
     await state.set_state(BroadcastFlow.waiting_for_confirmation)
 
     preview_text = (
-        f"📢 **BROADCAST PREVIEW (Photo Message):**\n\n"
-        f"📝 **Caption:**\n{caption if caption else '*(No caption)*'}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 **Audience:** `{len(all_users)}` registered users.\n\n"
+        "<blockquote>\n"
+        "<b>📢 BROADCAST PREVIEW (Photo)</b>\n"
+        f"<b>Audience:</b> {len(all_users)} registered users\n"
+        "</blockquote>\n\n"
+        f"📝 <b>Caption:</b>\n{html.escape(caption) if caption else '<i>(No caption)</i>'}\n\n"
         "Ready to send to all users?"
     )
     await message.reply_photo(
         photo=photo_file_id,
         caption=preview_text,
         reply_markup=get_broadcast_confirm_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 @admin_router.message(BroadcastFlow.waiting_for_content, F.text)
@@ -1005,13 +1114,14 @@ async def broadcast_receive_text(message: Message, state: FSMContext):
     await state.set_state(BroadcastFlow.waiting_for_confirmation)
 
     preview_text = (
-        "📢 **BROADCAST PREVIEW:**\n\n"
-        f"{text_content}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 **Audience:** `{len(all_users)}` registered users.\n\n"
+        "<blockquote>\n"
+        "<b>📢 BROADCAST PREVIEW</b>\n"
+        f"<b>Audience:</b> {len(all_users)} registered users\n"
+        "</blockquote>\n\n"
+        f"{html.escape(text_content)}\n\n"
         "Ready to send to all users?"
     )
-    await message.reply(preview_text, reply_markup=get_broadcast_confirm_keyboard(), parse_mode="Markdown")
+    await message.reply(preview_text, reply_markup=get_broadcast_confirm_keyboard(), parse_mode="HTML")
 
 @admin_router.callback_query(F.data == "broadcast_action:confirm")
 async def broadcast_execute(query: CallbackQuery, state: FSMContext, bot: Bot):
@@ -1032,7 +1142,7 @@ async def broadcast_execute(query: CallbackQuery, state: FSMContext, bot: Bot):
         return
 
     await query.answer("🚀 Starting broadcast...")
-    status_msg = await query.message.answer(f"⏳ **Broadcasting in progress...** (0/{total})")
+    status_msg = await query.message.answer(f"⏳ <b>Broadcasting in progress...</b> (0/{total})", parse_mode="HTML")
     await state.clear()
 
     sent_count = 0
@@ -1044,14 +1154,12 @@ async def broadcast_execute(query: CallbackQuery, state: FSMContext, bot: Bot):
                 await bot.send_photo(
                     chat_id=uid,
                     photo=data["photo_file_id"],
-                    caption=data.get("caption", ""),
-                    parse_mode="Markdown"
+                    caption=data.get("caption", "")
                 )
             else:
                 await bot.send_message(
                     chat_id=uid,
-                    text=data["text_content"],
-                    parse_mode="Markdown"
+                    text=data["text_content"]
                 )
             sent_count += 1
         except (TelegramForbiddenError, TelegramBadRequest):
@@ -1075,26 +1183,28 @@ async def broadcast_execute(query: CallbackQuery, state: FSMContext, bot: Bot):
         # Update progress every 25 users
         if idx % 25 == 0 or idx == total:
             try:
-                await status_msg.edit_text(f"⏳ **Broadcasting in progress...** ({idx}/{total})")
+                await status_msg.edit_text(f"⏳ <b>Broadcasting in progress...</b> ({idx}/{total})", parse_mode="HTML")
             except Exception:
                 pass
 
     report = (
-        "🎉 **BROADCAST COMPLETED!**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ **Delivered:** {sent_count} users\n"
-        f"🚫 **Blocked / Failed:** {blocked_count} users\n"
-        f"👥 **Total Audience:** {total} users\n"
-        "━━━━━━━━━━━━━━━━━━━━"
+        "<blockquote>\n"
+        "<b>🎉 BROADCAST COMPLETED</b>\n"
+        f"<b>Delivered:</b> {sent_count} users\n"
+        f"<b>Blocked / Failed:</b> {blocked_count} users\n"
+        f"<b>Total Audience:</b> {total} users\n"
+        "</blockquote>"
     )
-    await status_msg.edit_text(report, reply_markup=get_admin_dashboard_keyboard(), parse_mode="Markdown")
+    await status_msg.edit_text(report, reply_markup=get_admin_dashboard_keyboard(), parse_mode="HTML")
 
 @admin_router.callback_query(F.data == "broadcast_action:cancel")
 async def broadcast_cancel(query: CallbackQuery, state: FSMContext):
     await state.clear()
     await query.answer("Broadcast cancelled.")
     await query.message.edit_text(
-        "❌ **Broadcast cancelled.**",
+        "<blockquote>\n"
+        "<b>❌ BROADCAST CANCELLED</b>\n"
+        "</blockquote>",
         reply_markup=get_admin_dashboard_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
