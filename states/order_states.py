@@ -25,3 +25,12 @@ class EditPaymentFlow(StatesGroup):
     waiting_for_upi_id = State()
     waiting_for_qr_photo = State()
     waiting_for_payee_name = State()
+
+class AdminMessageBuyerFlow(StatesGroup):
+    waiting_for_message = State()
+
+class SupportFlow(StatesGroup):
+    waiting_for_query = State()
+
+class AdminReplyTicketFlow(StatesGroup):
+    waiting_for_reply = State()

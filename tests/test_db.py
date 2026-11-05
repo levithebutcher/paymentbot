@@ -208,5 +208,21 @@ class TestPaymentBotDatabase(unittest.IsolatedAsyncioTestCase):
         msg_id = await self.db.get_user_last_bot_msg(user_id)
         self.assertEqual(msg_id, 9911)
 
+    async def test_support_message_mapping(self):
+        user_id = 778899
+        ticket_id = "SUP-TEST01"
+        card_msg_id = 5544
+        group_chat_id = -100998877
+
+        await self.db.save_support_message(card_msg_id, group_chat_id, user_id, ticket_id)
+        res = await self.db.get_support_message(card_msg_id, group_chat_id)
+        self.assertIsNotNone(res)
+        self.assertEqual(res["user_id"], user_id)
+        self.assertEqual(res["ticket_id"], ticket_id)
+
+        by_id = await self.db.get_support_ticket_by_id(ticket_id)
+        self.assertIsNotNone(by_id)
+        self.assertEqual(by_id["user_id"], user_id)
+
 if __name__ == "__main__":
     unittest.main()

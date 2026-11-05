@@ -31,14 +31,19 @@ from database import (
     get_order_by_message,
     get_admin_order_messages,
     delete_admin_order_messages,
-    get_recent_orders
+    get_recent_orders,
+    save_support_message,
+    get_support_message,
+    get_support_ticket_by_id
 )
 from states.order_states import (
     AddServiceFlow,
     EditServiceFlow,
     BroadcastFlow,
     EditPaymentFlow,
-    AdminDeliveryFlow
+    AdminDeliveryFlow,
+    AdminMessageBuyerFlow,
+    AdminReplyTicketFlow
 )
 from keyboards.admin_keyboards import (
     get_admin_verification_keyboard,
@@ -49,6 +54,8 @@ from keyboards.admin_keyboards import (
     get_service_actions_keyboard,
     get_service_created_keyboard,
     get_recent_orders_keyboard,
+    get_support_ticket_keyboard,
+    get_cancel_support_reply_keyboard,
     get_broadcast_confirm_keyboard,
     get_cancel_admin_flow_keyboard,
     get_cancel_delivery_keyboard,
@@ -417,7 +424,29 @@ async def handle_admin_reply_delivery(message: Message, bot: Bot):
     chat_id = message.chat.id
     order = await get_order_by_message(replied_msg_id, chat_id)
     if not order:
-        return  # The replied message is not an active order card
+        # Check if replied message is a customer support ticket
+        support_ticket = await get_support_message(replied_msg_id, chat_id)
+        if support_ticket:
+            target_user_id = support_ticket["user_id"]
+            ticket_id = support_ticket["ticket_id"]
+            reply_header = (
+                "<blockquote>\n"
+                "<b>💬 SUPPORT TEAM REPLY</b>\n"
+                f"<b>Ticket ID:</b> <code>#{ticket_id}</code>\n"
+                "</blockquote>\n\n"
+                "<i>Our support team has sent you an update:</i>"
+            )
+            try:
+                await bot.send_message(chat_id=target_user_id, text=reply_header, parse_mode="HTML")
+                await message.copy_to(chat_id=target_user_id)
+                await message.reply(
+                    f"✅ <b>Support reply delivered to customer (ID: <code>{target_user_id}</code>)!</b>",
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                await message.reply(f"⚠️ Could not deliver reply to customer ({target_user_id}): {e}")
+            return
+        return  # Neither an order nor a support ticket
 
     if order["status"] == "COMPLETED":
         await message.reply("ℹ️ This order is already marked as COMPLETED.")
@@ -470,6 +499,178 @@ async def handle_admin_reply_delivery(message: Message, bot: Bot):
 
     await message.reply(
         f"✅ <b>Order #{order_id} delivered & approval cards cleared!</b>",
+        parse_mode="HTML"
+    )
+
+# --- OPTION 1: DIRECT "MESSAGE BUYER" HANDLERS ---
+
+@admin_router.callback_query(F.data.startswith("admin_msg_buyer:"))
+async def handle_admin_msg_buyer_start(query: CallbackQuery, state: FSMContext):
+    if not is_admin_authorized(query.from_user.id):
+        await query.answer("⛔ Unauthorized", show_alert=True)
+        return
+
+    order_id = query.data.split(":")[1]
+    order = await get_order(order_id)
+    if not order:
+        await query.answer("⚠️ Order not found.", show_alert=True)
+        return
+
+    await query.answer()
+    await state.set_state(AdminMessageBuyerFlow.waiting_for_message)
+    await state.update_data(
+        order_id=order_id,
+        buyer_id=order["user_id"],
+        service_title=order["service_title"]
+    )
+
+    safe_title = html.escape(order["service_title"])
+    text = (
+        "<blockquote>\n"
+        "<b>💬 SEND CUSTOM MESSAGE TO BUYER</b>\n"
+        f"<b>Order ID:</b> <code>#{order_id}</code>\n"
+        f"<b>Customer ID:</b> <code>{order['user_id']}</code>\n"
+        f"<b>Service:</b> {safe_title}\n"
+        "</blockquote>\n\n"
+        "👉 <i>Send the custom message or file you want to deliver to this customer:</i>\n"
+        "• Send a Text message\n"
+        "• Or send a Photo, Document, Audio, etc.\n\n"
+        "<i>The bot will forward it directly to the customer's chat!</i>"
+    )
+    prompt_msg = await query.message.reply(
+        text,
+        reply_markup=get_cancel_support_reply_keyboard(),
+        parse_mode="HTML"
+    )
+    await state.update_data(prompt_msg_id=prompt_msg.message_id)
+
+@admin_router.callback_query(F.data == "admin_cancel_support_reply")
+async def handle_cancel_admin_custom_msg(query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await query.answer("Cancelled.")
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+@admin_router.message(AdminMessageBuyerFlow.waiting_for_message)
+async def handle_admin_msg_buyer_finish(message: Message, state: FSMContext, bot: Bot):
+    if not is_admin_authorized(message.from_user.id):
+        return
+
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    buyer_id = data.get("buyer_id")
+    service_title = data.get("service_title", "Service")
+    prompt_msg_id = data.get("prompt_msg_id")
+
+    if not buyer_id:
+        await state.clear()
+        await message.reply("⚠️ Session expired. Please tap 'Message Buyer' again.")
+        return
+
+    safe_title = html.escape(service_title)
+    msg_header = (
+        "<blockquote>\n"
+        "<b>📩 MESSAGE FROM STORE ADMIN</b>\n"
+        f"<b>Order ID:</b> <code>#{order_id}</code>\n"
+        f"<b>Service:</b> {safe_title}\n"
+        "</blockquote>\n\n"
+        "<i>Note from admin:</i>"
+    )
+
+    try:
+        await bot.send_message(chat_id=buyer_id, text=msg_header, parse_mode="HTML")
+        await message.copy_to(chat_id=buyer_id)
+    except Exception as e:
+        await message.reply(f"⚠️ Could not deliver message to customer ({buyer_id}): {e}")
+        return
+
+    await state.clear()
+
+    if prompt_msg_id:
+        try:
+            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_msg_id)
+        except Exception:
+            pass
+
+    await message.reply(
+        f"✅ <b>Custom message delivered to customer (ID: <code>{buyer_id}</code>)!</b>",
+        parse_mode="HTML"
+    )
+
+# --- SUPPORT TICKET BUTTON REPLY HANDLERS ---
+
+@admin_router.callback_query(F.data.startswith("admin_reply_ticket:"))
+async def handle_admin_ticket_reply_start(query: CallbackQuery, state: FSMContext):
+    if not is_admin_authorized(query.from_user.id):
+        await query.answer("⛔ Unauthorized", show_alert=True)
+        return
+
+    ticket_id = query.data.split(":")[1]
+    ticket = await get_support_ticket_by_id(ticket_id)
+    if not ticket:
+        await query.answer("⚠️ Ticket not found.", show_alert=True)
+        return
+
+    await query.answer()
+    await state.set_state(AdminReplyTicketFlow.waiting_for_reply)
+    await state.update_data(ticket_id=ticket_id, user_id=ticket["user_id"])
+
+    text = (
+        "<blockquote>\n"
+        f"<b>💬 REPLY TO SUPPORT TICKET: #{ticket_id}</b>\n"
+        f"<b>Customer ID:</b> <code>{ticket['user_id']}</code>\n"
+        "</blockquote>\n\n"
+        "👉 <i>Send your reply message or file below:</i>"
+    )
+    prompt_msg = await query.message.reply(
+        text,
+        reply_markup=get_cancel_support_reply_keyboard(),
+        parse_mode="HTML"
+    )
+    await state.update_data(prompt_msg_id=prompt_msg.message_id)
+
+@admin_router.message(AdminReplyTicketFlow.waiting_for_reply)
+async def handle_admin_ticket_reply_finish(message: Message, state: FSMContext, bot: Bot):
+    if not is_admin_authorized(message.from_user.id):
+        return
+
+    data = await state.get_data()
+    ticket_id = data.get("ticket_id")
+    user_id = data.get("user_id")
+    prompt_msg_id = data.get("prompt_msg_id")
+
+    if not user_id:
+        await state.clear()
+        await message.reply("⚠️ Session expired. Please reply or tap the button again.")
+        return
+
+    reply_header = (
+        "<blockquote>\n"
+        "<b>💬 SUPPORT TEAM REPLY</b>\n"
+        f"<b>Ticket:</b> <code>#{ticket_id}</code>\n"
+        "</blockquote>\n\n"
+        "<i>Our admin team has replied:</i>"
+    )
+
+    try:
+        await bot.send_message(chat_id=user_id, text=reply_header, parse_mode="HTML")
+        await message.copy_to(chat_id=user_id)
+    except Exception as e:
+        await message.reply(f"⚠️ Could not deliver reply to customer ({user_id}): {e}")
+        return
+
+    await state.clear()
+
+    if prompt_msg_id:
+        try:
+            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_msg_id)
+        except Exception:
+            pass
+
+    await message.reply(
+        f"✅ <b>Support reply delivered to customer (ID: <code>{user_id}</code>)!</b>",
         parse_mode="HTML"
     )
 

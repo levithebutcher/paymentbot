@@ -68,6 +68,15 @@ async def init_db() -> None:
             order_id TEXT,
             PRIMARY KEY(message_id, chat_id)
         );
+
+        CREATE TABLE IF NOT EXISTS support_messages (
+            message_id INTEGER,
+            chat_id INTEGER,
+            user_id INTEGER,
+            ticket_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(message_id, chat_id)
+        );
         """)
 
         # Add receipt_msg_id column to orders if not already present
@@ -287,6 +296,42 @@ async def delete_admin_order_messages(order_id: str) -> None:
     async with get_connection() as conn:
         await conn.execute("DELETE FROM order_messages WHERE order_id = ?", (order_id,))
         await conn.commit()
+
+async def save_support_message(message_id: int, chat_id: int, user_id: int, ticket_id: str) -> None:
+    """Map admin group/DM message to a support ticket so admin can swipe-to-reply."""
+    async with get_connection() as conn:
+        await conn.execute(
+            """
+            INSERT OR REPLACE INTO support_messages (message_id, chat_id, user_id, ticket_id)
+            VALUES (?, ?, ?, ?)
+            """,
+            (message_id, chat_id, user_id, ticket_id)
+        )
+        await conn.commit()
+
+async def get_support_message(message_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieve support ticket details by admin message ID."""
+    async with get_connection() as conn:
+        async with conn.execute(
+            "SELECT * FROM support_messages WHERE message_id = ? AND chat_id = ?",
+            (message_id, chat_id)
+        ) as cur:
+            row = await cur.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+async def get_support_ticket_by_id(ticket_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve ticket details by ticket ID."""
+    async with get_connection() as conn:
+        async with conn.execute(
+            "SELECT * FROM support_messages WHERE ticket_id = ? LIMIT 1",
+            (ticket_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            if row:
+                return dict(row)
+            return None
 
 async def approve_order(order_id: str, admin_id: int) -> Optional[Dict[str, Any]]:
     """Marks order as COMPLETED and returns order info with delivery content."""

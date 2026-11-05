@@ -42,3 +42,16 @@ def get_back_to_catalog_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="← Back to Catalog", callback_data="back_to_services")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_support_start_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="💬 Send Message to Support", callback_data="user_start_support")],
+        [InlineKeyboardButton(text="💎 Browse Catalog", callback_data="back_to_services")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_cancel_support_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="✕ Cancel Support Message", callback_data="cancel_user_support")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)

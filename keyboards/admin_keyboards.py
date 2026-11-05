@@ -6,7 +6,22 @@ def get_admin_verification_keyboard(order_id: str) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="📤 Send Delivery", callback_data=f"admin_deliver_flow:{order_id}"),
             InlineKeyboardButton(text="❌ Reject", callback_data=f"admin_reject:{order_id}")
+        ],
+        [
+            InlineKeyboardButton(text="💬 Message Buyer", callback_data=f"admin_msg_buyer:{order_id}")
         ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_support_ticket_keyboard(ticket_id: str) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="💬 Reply to Customer", callback_data=f"admin_reply_ticket:{ticket_id}")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_cancel_support_reply_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="✕ Cancel Reply", callback_data="admin_cancel_support_reply")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

@@ -1,20 +1,27 @@
 import html
-from aiogram import Router, F
+import uuid
+from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
+from config import config
 from database import (
     upsert_user,
     get_services,
     get_user_orders,
     get_user_last_bot_msg,
-    set_user_last_bot_msg
+    set_user_last_bot_msg,
+    save_support_message
 )
+from states.order_states import SupportFlow
 from keyboards.user_keyboards import (
     get_main_menu_keyboard,
     get_services_keyboard,
-    get_back_to_catalog_keyboard
+    get_back_to_catalog_keyboard,
+    get_support_start_keyboard,
+    get_cancel_support_keyboard
 )
+from keyboards.admin_keyboards import get_support_ticket_keyboard
 
 start_router = Router()
 
@@ -58,13 +65,107 @@ async def handle_help(message: Message):
         "<b>💬 HOW TO ORDER & PAY</b>\n"
         "Follow these 4 simple steps:\n"
         "</blockquote>\n\n"
-        "1. <b>Choose Service:</b> Tap a service from the catalog below.\n"
+        "1. <b>Choose Service:</b> Tap a service from the catalog.\n"
         "2. <b>Make Payment:</b> Scan the UPI QR Code or copy our UPI ID.\n"
         "3. <b>Send Screenshot:</b> Upload your payment receipt screenshot here.\n"
-        "4. <b>Receive Delivery:</b> Our admin verifies the payment and delivers your file or access directly in this chat!\n\n"
-        "💡 <i>Type /cancel anytime to abort an active order.</i>"
+        "4. <b>Receive Delivery:</b> Our admin verifies payment and delivers directly here!\n\n"
+        "💡 <i>Have a question or need personal assistance? Tap 'Send Message to Support' below:</i>"
     )
-    await message.answer(help_text, reply_markup=get_main_menu_keyboard(), parse_mode="HTML")
+    await message.answer(help_text, reply_markup=get_support_start_keyboard(), parse_mode="HTML")
+
+@start_router.message(Command("support"))
+@start_router.callback_query(F.data == "user_start_support")
+async def handle_user_start_support(event: Message | CallbackQuery, state: FSMContext):
+    await state.set_state(SupportFlow.waiting_for_query)
+    text = (
+        "<blockquote>\n"
+        "<b>💬 CUSTOMER SUPPORT</b>\n"
+        "Need help with an order, payment, or service?\n"
+        "</blockquote>\n\n"
+        "👉 <b>Type and send your message below:</b>\n"
+        "<i>You can send text, a screenshot, or a file. Our support team will review and reply directly to you here!</i>"
+    )
+    kb = get_cancel_support_keyboard()
+    if isinstance(event, CallbackQuery):
+        await event.answer()
+        sent = await event.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        await state.update_data(prompt_msg_id=sent.message_id)
+    else:
+        sent = await event.answer(text, reply_markup=kb, parse_mode="HTML")
+        await state.update_data(prompt_msg_id=sent.message_id)
+
+@start_router.callback_query(F.data == "cancel_user_support")
+async def handle_cancel_user_support(query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await query.answer("Support request cancelled.")
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+@start_router.message(SupportFlow.waiting_for_query)
+async def handle_user_submit_support(message: Message, state: FSMContext, bot: Bot):
+    user = message.from_user
+    data = await state.get_data()
+    prompt_msg_id = data.get("prompt_msg_id")
+    await state.clear()
+
+    if prompt_msg_id:
+        try:
+            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_msg_id)
+        except Exception:
+            pass
+
+    ticket_id = f"SUP-{uuid.uuid4().hex[:6].upper()}"
+
+    # Warm confirmation to customer
+    user_confirm = (
+        "<blockquote>\n"
+        f"<b>✅ TICKET SUBMITTED: #{ticket_id}</b>\n"
+        "Your message has been forwarded to our support team.\n"
+        "</blockquote>\n\n"
+        "⏳ <i>Please wait while an admin reviews your query. Their reply will appear directly in this chat!</i>"
+    )
+    await message.reply(user_confirm, reply_markup=get_main_menu_keyboard(), parse_mode="HTML")
+
+    # Forward ticket card + user content to Admin Group and Admins
+    destinations = set()
+    if config.ADMIN_GROUP_ID and config.ADMIN_GROUP_ID != 0:
+        destinations.add(config.ADMIN_GROUP_ID)
+    for aid in config.ADMIN_IDS:
+        destinations.add(aid)
+
+    user_str = f"@{user.username}" if user.username else "No username"
+    safe_name = html.escape(user.full_name or "Customer")
+    safe_user = html.escape(user_str)
+
+    admin_card = (
+        "<blockquote>\n"
+        "<b>🙋‍♂️ NEW SUPPORT TICKET</b>\n"
+        f"<b>Ticket ID:</b> <code>#{ticket_id}</code>\n"
+        f"<b>Customer:</b> {safe_name} ({safe_user})\n"
+        f"<b>Customer ID:</b> <code>{user.id}</code>\n"
+        "</blockquote>\n\n"
+        "👉 <i>Swipe-to-reply to this message with your response, or tap below:</i>"
+    )
+    admin_kb = get_support_ticket_keyboard(ticket_id)
+
+    for dest_id in destinations:
+        try:
+            card_msg = await bot.send_message(
+                chat_id=dest_id,
+                text=admin_card,
+                reply_markup=admin_kb,
+                parse_mode="HTML"
+            )
+            # Copy customer's message (text/photo/document/video) right below card
+            copied_msg = await message.copy_to(chat_id=dest_id)
+
+            # Map BOTH so swipe-to-reply works on either!
+            await save_support_message(card_msg.message_id, dest_id, user.id, ticket_id)
+            await save_support_message(copied_msg.message_id, dest_id, user.id, ticket_id)
+        except Exception as e:
+            print(f"Error forwarding support query to {dest_id}: {e}")
 
 @start_router.message(Command("cancel"))
 async def handle_cancel(message: Message, state: FSMContext):
