@@ -98,6 +98,10 @@ async def main():
     except Exception as e:
         logger.warning(f"Could not set bot commands: {e}")
 
+    # Start asynchronous link resolver queue
+    from link_queue import resolver_queue
+    resolver_queue.start()
+
     health_runner = await start_healthcheck_server()
 
     try:
