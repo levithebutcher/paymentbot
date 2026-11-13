@@ -89,6 +89,7 @@ async def main():
         BotCommand(command="orders", description="📦 My Orders History"),
         BotCommand(command="support", description="💬 Live Customer Support"),
         BotCommand(command="help", description="ℹ️ How to Order & FAQs"),
+        BotCommand(command="resolve", description="🔗 Resolve S3 / Paste Link"),
         BotCommand(command="cancel", description="✕ Cancel Active Order"),
     ]
     try:

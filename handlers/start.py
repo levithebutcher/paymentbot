@@ -1,8 +1,9 @@
 import html
 import uuid
+import re
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from config import config
 from database import (
@@ -22,6 +23,7 @@ from keyboards.user_keyboards import (
     get_cancel_support_keyboard
 )
 from keyboards.admin_keyboards import get_support_ticket_keyboard
+from resolve_link import extract_final_link_async
 
 start_router = Router()
 
@@ -258,3 +260,46 @@ async def handle_my_orders(event: Message | CallbackQuery):
             await event.message.answer(text, reply_markup=kb, parse_mode="HTML")
     else:
         await event.answer(text, reply_markup=kb, parse_mode="HTML")
+
+@start_router.message(Command("resolve"))
+@start_router.message(F.text.regexp(r"https?://[^\s]+"))
+async def handle_resolve_link_message(message: Message, state: FSMContext):
+    # Only handle if not in an active FSM state (like screenshot upload or support query)
+    current_state = await state.get_state()
+    if current_state is not None:
+        return
+
+    text = message.text.strip() if message.text else ""
+    match = re.search(r"https?://[^\s]+", text)
+    if not match:
+        await message.reply("⚠️ Please provide a valid link to resolve.\nExample: <code>/resolve https://...</code>", parse_mode="HTML")
+        return
+
+    raw_url = match.group(0)
+
+    # Filter: Trigger if using /resolve OR if message contains linkvertise/s3/paste/.txt/pastebin
+    is_explicit_cmd = text.startswith("/resolve")
+    is_paste_url = any(k in raw_url.lower() for k in ("s3.", "amazonaws.com", "linkvertise", ".txt", "paste", "pastebin"))
+
+    if not (is_explicit_cmd or is_paste_url):
+        return
+
+    status_msg = await message.reply("⏳ <i>Resolving destination link...</i>", parse_mode="HTML")
+    try:
+        final_link = await extract_final_link_async(raw_url)
+        kb = None
+        if final_link.startswith(("http://", "https://", "tg://")):
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👉 Open Destination Link", url=final_link)]
+            ])
+
+        reply_text = (
+            "<blockquote>\n"
+            "<b>🎯 LINK RESOLVED</b>\n"
+            f"<b>Destination:</b> <code>{html.escape(final_link)}</code>\n"
+            "</blockquote>"
+        )
+        await status_msg.edit_text(reply_text, reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        err_msg = html.escape(str(e))
+        await status_msg.edit_text(f"❌ <b>Failed to resolve link:</b>\n<i>{err_msg}</i>", parse_mode="HTML")
