@@ -284,7 +284,7 @@ async def handle_resolve_link_message(message: Message, state: FSMContext):
     if not (is_explicit_cmd or is_paste_url):
         return
 
-    status_msg = await message.reply("⏳ <i>Resolving destination link...</i>", parse_mode="HTML")
+    status_msg = await message.answer("⏳ <i>Resolving destination link...</i>", parse_mode="HTML")
     try:
         final_link = await extract_final_link_async(raw_url)
         kb = None
@@ -300,6 +300,12 @@ async def handle_resolve_link_message(message: Message, state: FSMContext):
             "</blockquote>"
         )
         await status_msg.edit_text(reply_text, reply_markup=kb, parse_mode="HTML")
+
+        # Delete user's message containing the raw link to keep chat clean
+        try:
+            await message.delete()
+        except Exception:
+            pass
     except Exception as e:
         err_msg = html.escape(str(e))
         await status_msg.edit_text(f"❌ <b>Failed to resolve link:</b>\n<i>{err_msg}</i>", parse_mode="HTML")
