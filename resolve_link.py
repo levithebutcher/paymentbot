@@ -67,18 +67,22 @@ def sanitize_s3_url(raw_url: str) -> str:
     
     Fixes the critical AccessDenied XML error where `&amp;` corrupts
     query parameters (such as &AWSAccessKeyId=, &Signature=, &Expires=).
+    Also cleans enclosing quotes and trailing punctuation from prose.
     """
     if not raw_url:
         return ""
     
-    # Strip whitespace, newlines, and enclosing quotes
-    cleaned = raw_url.strip().strip("\"'").strip()
+    # Strip whitespace, newlines, and enclosing quotes/brackets
+    cleaned = raw_url.strip().strip("\"'<>").strip()
     
     # Unescape HTML entities (e.g. &amp; -> &, &quot; -> ", etc.)
     cleaned = html.unescape(cleaned)
     
     # Secondary check in case of multiple or partial escaping
     cleaned = cleaned.replace("&amp;", "&")
+    
+    # Clean trailing punctuation from prose (e.g., periods, commas, closing parens)
+    cleaned = _clean_trailing_punctuation(cleaned)
     
     return cleaned
 

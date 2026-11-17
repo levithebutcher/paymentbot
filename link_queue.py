@@ -23,6 +23,7 @@ class ResolveTask(NamedTuple):
     url: str
     status_msg: Message
     task_id: int
+    context_text: Optional[str] = None
 
 
 class LinkResolverQueue:
@@ -42,7 +43,7 @@ class LinkResolverQueue:
                 self._workers.append(worker)
             logger.info("LinkResolverQueue started with %d workers.", self._concurrency)
 
-    async def enqueue(self, message: Message, url: str) -> None:
+    async def enqueue(self, message: Message, url: str, context_text: Optional[str] = None) -> None:
         """
         Enqueues a link resolution task.
         Sends immediate user feedback with queue position if busy.
@@ -72,6 +73,7 @@ class LinkResolverQueue:
             url=url,
             status_msg=status_msg,
             task_id=self._task_counter,
+            context_text=context_text,
         )
         await self._queue.put(task)
 
@@ -97,6 +99,7 @@ class LinkResolverQueue:
     async def _process_task(self, task: ResolveTask) -> None:
         """Processes a single link resolution task."""
         message, url, status_msg = task.message, task.url, task.status_msg
+        context_text = task.context_text
 
         try:
             # If status message indicated queue waiting, update to active resolving
@@ -113,7 +116,17 @@ class LinkResolverQueue:
                     [InlineKeyboardButton(text="👉 Open Destination Link", url=final_link)]
                 ])
 
-            reply_text = (
+            reply_text = ""
+            if context_text:
+                # Include sanitized accompanying text/notes/title
+                safe_context = html.escape(context_text.strip()[:1000])
+                reply_text += (
+                    "<blockquote>\n"
+                    f"<b>📋 Note / Description:</b>\n{safe_context}\n"
+                    "</blockquote>\n\n"
+                )
+
+            reply_text += (
                 "<blockquote>\n"
                 "<b>🎯 LINK RESOLVED</b>\n"
                 f"<b>Destination:</b> <code>{html.escape(final_link)}</code>\n"

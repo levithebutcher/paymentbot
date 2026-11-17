@@ -261,48 +261,100 @@ async def handle_my_orders(event: Message | CallbackQuery):
     else:
         await event.answer(text, reply_markup=kb, parse_mode="HTML")
 
-def extract_resolvable_urls(message: Message) -> list[str]:
+def clean_url_string(u: str) -> str:
+    """Strips quotes, angle brackets, and trailing punctuation attached to URLs in prose."""
+    if not u:
+        return ""
+    u = u.strip().strip("\"'<>").strip()
+    return u.rstrip(".,;:!?'\")>]}")
+
+
+def extract_resolvable_urls_and_context(message: Message) -> tuple[list[str], str]:
     """
-    Extracts all S3/Linkvertise/paste/.txt URLs from ANY message:
+    Extracts all S3/Linkvertise/paste/.txt URLs and any accompanying text/caption:
     - Normal text messages
     - Forwarded messages (from channels, groups, or users)
     - Photos, documents, or videos with captions
     - Hyperlinks (text_link entities)
     - Explicit /resolve commands
     """
-    urls: list[str] = []
+    found_urls: list[str] = []
 
-    # 1. Check entities (for text_link hyperlinks) in both text and caption
-    entities = (message.entities or []) + (message.caption_entities or [])
-    for ent in entities:
-        if ent.type == "text_link" and ent.url:
-            urls.append(ent.url)
+    # 1. Check message entities in text and caption
+    for text_source, entities in [
+        (message.text, message.entities),
+        (message.caption, message.caption_entities)
+    ]:
+        if not text_source or not entities:
+            continue
+        for ent in entities:
+            if ent.type == "text_link" and ent.url:
+                cleaned = clean_url_string(ent.url)
+                if cleaned:
+                    found_urls.append(cleaned)
+            elif ent.type == "url":
+                url_str = text_source[ent.offset : ent.offset + ent.length]
+                cleaned = clean_url_string(url_str)
+                if cleaned:
+                    found_urls.append(cleaned)
 
-    # 2. Extract from raw text and caption
+    # 2. Extract from raw text and caption via regex
     raw_content = ""
     if message.text:
-        raw_content += message.text + " "
+        raw_content += message.text + "\n"
     if message.caption:
-        raw_content += message.caption + " "
+        raw_content += message.caption + "\n"
 
     if raw_content:
         for match in re.finditer(r"https?://[^\s<>'\"()]+", raw_content):
-            urls.append(match.group(0))
+            cleaned = clean_url_string(match.group(0))
+            if cleaned:
+                found_urls.append(cleaned)
 
-    if not urls:
-        return []
+    unique_urls = list(dict.fromkeys(found_urls))
+    if not unique_urls:
+        return [], ""
 
     # Check if explicit /resolve command was used
     is_explicit_cmd = bool(message.text and message.text.startswith("/resolve"))
-    if is_explicit_cmd:
-        return list(dict.fromkeys(urls))
 
-    # Filter for target paste / S3 / linkvertise / .txt URLs
-    filtered = [
-        u for u in urls
-        if any(k in u.lower() for k in ("s3.", "amazonaws.com", "linkvertise", ".txt", "paste", "pastebin"))
-    ]
-    return list(dict.fromkeys(filtered))
+    KEYWORDS = (
+        "s3.", "amazonaws.com", "linkvertise", ".txt", "paste", "pastebin",
+        "link-to.net", "direct-link.net", "file-link.net", "up-to-down.net",
+        "link-target.net", "link-hub.net", "lootlinks.com", "loot-link.com",
+        "loot-links.com", "free-content.pro", "rentry.co", "controlc.com",
+        "justpaste.it", "paste.ee", "hastebin.com", "dpaste.org"
+    )
+
+    if is_explicit_cmd:
+        valid_urls = unique_urls
+    else:
+        valid_urls = [
+            u for u in unique_urls
+            if any(k in u.lower() for k in KEYWORDS)
+        ]
+
+    if not valid_urls:
+        return [], ""
+
+    # Calculate accompanying text by stripping the detected URLs and /resolve command
+    acc_text = raw_content
+    if is_explicit_cmd:
+        acc_text = re.sub(r"^/resolve\s*", "", acc_text, flags=re.IGNORECASE)
+
+    for u in valid_urls:
+        acc_text = acc_text.replace(u, "")
+
+    acc_lines = [line.strip() for line in acc_text.splitlines() if line.strip()]
+    cleaned_acc_text = "\n".join(acc_lines).strip()
+
+    return valid_urls, cleaned_acc_text
+
+
+def extract_resolvable_urls(message: Message) -> list[str]:
+    """Helper wrapper returning list of resolvable URLs."""
+    urls, _ = extract_resolvable_urls_and_context(message)
+    return urls
 
 
 @start_router.message(Command("resolve"))
@@ -313,7 +365,7 @@ async def handle_resolve_link_message(message: Message, state: FSMContext):
     if current_state is not None:
         return
 
-    urls = extract_resolvable_urls(message)
+    urls, context_text = extract_resolvable_urls_and_context(message)
     if not urls:
         if message.text and message.text.startswith("/resolve"):
             await message.reply(
@@ -325,4 +377,4 @@ async def handle_resolve_link_message(message: Message, state: FSMContext):
 
     # Enqueue each resolvable link into our rate-limiting background queue!
     for url in urls:
-        await resolver_queue.enqueue(message, url)
+        await resolver_queue.enqueue(message, url, context_text=context_text)
