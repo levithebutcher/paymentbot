@@ -6,9 +6,30 @@ from resolve_link import (
     extract_links_from_text,
     extract_final_link,
     extract_final_link_async,
+    normalize_paste_url,
 )
 
 class TestResolveLink(unittest.TestCase):
+    def test_normalize_paste_url(self):
+        self.assertEqual(normalize_paste_url("https://pastebin.com/abcd123"), "https://pastebin.com/raw/abcd123")
+        self.assertEqual(normalize_paste_url("https://rentry.co/mytext"), "https://rentry.co/mytext/raw")
+        self.assertEqual(normalize_paste_url("https://paste.ee/p/xyz"), "https://paste.ee/r/xyz")
+        self.assertEqual(normalize_paste_url("https://dpaste.org/sample"), "https://dpaste.org/sample/raw")
+
+    def test_pastelink_filter_internal_and_ads(self):
+        html_pastelink = '''
+        <html>
+        <link rel="stylesheet" href="/assets/css/styles.css">
+        <a href="https://fonts.gstatic.com">Font</a>
+        <button data-url="https://pslk.net/8k0t0va3">Shortlink</button>
+        <p><a href="https://t.me/PastelinkVIPChannel">Join VIP</a></p>
+        <a href="https://www.facebook.com/sharer">Share</a>
+        <a href="https://go.nordvpn.net/aff_c">Ad</a>
+        </html>
+        '''
+        links = extract_links_from_text(html_pastelink, source_url="https://pastelink.net/8k0t0va3")
+        self.assertEqual(links, ["https://t.me/PastelinkVIPChannel"])
+
     def test_sanitize_s3_url(self):
         raw = "https://s3.amazonaws.com/bucket/file.txt?AWSAccessKeyId=AKIAIOSFODNN7EXAMPLE&amp;Signature=vjbyPxybdZaNmGa%2ByT272YEAiv4%3D&amp;Expires=1700000000"
         cleaned = sanitize_s3_url(raw)

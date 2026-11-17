@@ -6,6 +6,24 @@ from handlers.start import extract_resolvable_urls, extract_resolvable_urls_and_
 from aiogram.types import MessageEntity
 
 class TestLinkQueue(unittest.TestCase):
+    def test_extract_pastelink_url(self):
+        msg = MagicMock()
+        msg.text = "Here is the paste: https://pastelink.net/8k0t0va3"
+        msg.caption = None
+        msg.entities = None
+        msg.caption_entities = None
+        urls = extract_resolvable_urls(msg)
+        self.assertEqual(urls, ["https://pastelink.net/8k0t0va3"])
+
+    def test_extract_pslk_shortlink(self):
+        msg = MagicMock()
+        msg.text = "Alternative shortlink: https://pslk.net/8k0t0va3"
+        msg.caption = None
+        msg.entities = None
+        msg.caption_entities = None
+        urls = extract_resolvable_urls(msg)
+        self.assertEqual(urls, ["https://pslk.net/8k0t0va3"])
+
     def test_extract_from_plain_text(self):
         msg = MagicMock()
         msg.text = "Check this: https://s3.eu-central-1.amazonaws.com/pastes/123.txt"

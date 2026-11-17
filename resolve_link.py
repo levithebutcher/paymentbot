@@ -33,6 +33,7 @@ import ssl
 import asyncio
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 from typing import Optional, List
 
 # Standard desktop browser user-agent to avoid anti-scraping 403 blocks
@@ -92,13 +93,93 @@ def _clean_trailing_punctuation(link: str) -> str:
     return link.rstrip(".,;:!?'\")>]}")
 
 
-def extract_links_from_text(text: str) -> List[str]:
+# Domains and extensions to ignore when scraping HTML paste pages
+IGNORED_DOMAINS = (
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+    "cdnjs.cloudflare.com",
+    "code.jquery.com",
+    "cdn.jsdelivr.net",
+    "www.w3.org",
+    "facebook.com",
+    "twitter.com",
+    "x.com",
+    "reddit.com",
+    "pinterest.com",
+    "whatsapp.com",
+    "nordvpn.net",
+    "doubleclick.net",
+    "googleads",
+    "googletagmanager.com",
+    "google-analytics.com",
+)
+
+IGNORED_EXTENSIONS = (
+    ".css", ".js", ".ico", ".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp", ".woff", ".woff2", ".ttf"
+)
+
+
+def normalize_paste_url(url: str) -> str:
     """
-    Parses plain text or HTML content to extract links.
+    Normalizes pastebin URLs to their raw text endpoints where available.
+    Supports Pastebin, Rentry, Paste.ee, Dpaste, and Hastebin.
+    """
+    if "pastebin.com/" in url and "/raw/" not in url:
+        url = re.sub(r"pastebin\.com/([a-zA-Z0-9]+)$", r"pastebin.com/raw/\1", url)
+    elif ("rentry.co/" in url or "rentry.org/" in url) and not url.endswith("/raw"):
+        url = re.sub(r"rentry\.(co|org)/([a-zA-Z0-9]+)$", r"rentry.\1/\2/raw", url)
+    elif "paste.ee/p/" in url:
+        url = url.replace("paste.ee/p/", "paste.ee/r/")
+    elif "dpaste.org/" in url and not url.endswith("/raw"):
+        url = re.sub(r"dpaste\.org/([a-zA-Z0-9]+)$", r"dpaste.org/\1/raw", url)
+    elif "hastebin.com/" in url and "/raw/" not in url:
+        url = re.sub(r"hastebin\.com/([a-zA-Z0-9]+)$", r"hastebin.com/raw/\1", url)
+    return url
+
+
+def is_valid_destination_link(link: str, source_host: str = "") -> bool:
+    """Validates if an extracted link is a legitimate external destination link."""
+    if not link.startswith(("http://", "https://")):
+        return False
+    parsed = urlparse(link)
+    host = parsed.netloc.lower()
+    if not host:
+        return False
+    # Ignore same-host / self-references (e.g. pastelink.net internal links on pastelink.net)
+    if source_host:
+        sh = source_host.lower()
+        if host == sh or host.endswith("." + sh):
+            return False
+        if "pastelink.net" in sh and ("pslk.net" in host or "pastelink.net" in host):
+            return False
+        if "justpaste.it" in sh and "justpaste.it" in host:
+            return False
+        if "controlc.com" in sh and "controlc.com" in host:
+            return False
+    # Ignore CDN, social share, ads
+    if any(d in host or d in link.lower() for d in IGNORED_DOMAINS):
+        return False
+    # Ignore static files
+    path = parsed.path.lower()
+    if any(path.endswith(ext) for ext in IGNORED_EXTENSIONS):
+        return False
+    return True
+
+
+def extract_links_from_text(text: str, source_url: Optional[str] = None) -> List[str]:
+    """
+    Parses plain text or HTML content to extract destination links.
     Returns links with Telegram URLs prioritized at the top.
     """
     if not text:
         return []
+
+    source_host = ""
+    if source_url:
+        try:
+            source_host = urlparse(source_url).netloc.lower()
+        except Exception:
+            pass
 
     # 1. First priority: Extract direct Telegram URLs
     tg_links = [
@@ -106,7 +187,6 @@ def extract_links_from_text(text: str) -> List[str]:
         for match in TELEGRAM_URL_PATTERN.finditer(text)
     ]
     if tg_links:
-        # Deduplicate while preserving order
         return list(dict.fromkeys(tg_links))
 
     # 2. Second priority: Look for href links in HTML
@@ -114,19 +194,21 @@ def extract_links_from_text(text: str) -> List[str]:
         _clean_trailing_punctuation(match.group(1))
         for match in HREF_PATTERN.finditer(text)
     ]
-    # Check if any href is a Telegram link
-    tg_hrefs = [l for l in href_links if any(d in l.lower() for d in ("t.me", "telegram.me", "telegram.dog"))]
+    valid_hrefs = [l for l in href_links if is_valid_destination_link(l, source_host)]
+    # Prioritize any Telegram links in hrefs
+    tg_hrefs = [l for l in valid_hrefs if any(d in l.lower() for d in ("t.me", "telegram.me", "telegram.dog"))]
     if tg_hrefs:
         return list(dict.fromkeys(tg_hrefs))
-    if href_links:
-        return list(dict.fromkeys(href_links))
+    if valid_hrefs:
+        return list(dict.fromkeys(valid_hrefs))
 
-    # 3. Third priority: Any generic HTTP/HTTPS link
+    # 3. Third priority: Any generic HTTP/HTTPS link in raw text
     all_links = [
         _clean_trailing_punctuation(match.group(0))
         for match in GENERAL_URL_PATTERN.finditer(text)
     ]
-    return list(dict.fromkeys(all_links))
+    valid_all = [l for l in all_links if is_valid_destination_link(l, source_host)]
+    return list(dict.fromkeys(valid_all))
 
 
 def _fetch_url_content(req: urllib.request.Request, timeout: int) -> tuple[str, str]:
@@ -171,12 +253,15 @@ def extract_final_link(url: str, timeout: int = 15) -> str:
     if not cleaned_url or not cleaned_url.startswith(("http://", "https://")):
         raise ValueError(f"Invalid or empty URL provided: {url!r}")
 
+    # Normalize known pastebin sites to their raw endpoints for cleaner/faster parsing
+    fetch_url = normalize_paste_url(cleaned_url)
+
     headers = {
         "User-Agent": DEFAULT_USER_AGENT,
         "Accept": "text/html,text/plain,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
-    req = urllib.request.Request(cleaned_url, headers=headers)
+    req = urllib.request.Request(fetch_url, headers=headers)
 
     try:
         final_redirect_url, content = _fetch_url_content(req, timeout)
@@ -202,10 +287,22 @@ def extract_final_link(url: str, timeout: int = 15) -> str:
     except Exception as err:
         raise RuntimeError(f"Unexpected error while resolving link: {err}") from err
 
-    # Parse content to extract destination links
-    links = extract_links_from_text(content)
+    # Parse content to extract destination links (filtering out paste site self-references)
+    links = extract_links_from_text(content, source_url=cleaned_url)
     if links:
-        return links[0]
+        target_link = links[0]
+        # If the destination link is a known shortlink, follow redirect to check for Telegram
+        if not any(d in target_link.lower() for d in ("t.me", "telegram.me", "telegram.dog")):
+            if any(short in target_link.lower() for short in ("t.co/", "bit.ly/", "tinyurl.com/", "cutt.ly/", "is.gd/", "rb.gy/")):
+                try:
+                    s_req = urllib.request.Request(target_link, headers=headers)
+                    redir_url, _ = _fetch_url_content(s_req, timeout=5)
+                    if any(d in redir_url.lower() for d in ("t.me", "telegram.me", "telegram.dog")):
+                        return redir_url
+                    target_link = redir_url
+                except Exception:
+                    pass
+        return target_link
 
     # If no link found, but content is non-empty plain text, check if content itself is a target
     trimmed = content.strip()

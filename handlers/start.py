@@ -320,10 +320,13 @@ def extract_resolvable_urls_and_context(message: Message) -> tuple[list[str], st
 
     KEYWORDS = (
         "s3.", "amazonaws.com", "linkvertise", ".txt", "paste", "pastebin",
+        "pastelink.net", "pslk.net", "justpaste.it", "paste.ee", "rentry.co",
+        "rentry.org", "controlc.com", "hastebin.com", "dpaste.org", "dpaste.com",
+        "paste2.org", "ghostbin.com", "pastery.net", "tny.im", "txt.im",
+        "notes.io", "telegra.ph", "sharetext.me", "zerobin.net", "privatebin.net",
         "link-to.net", "direct-link.net", "file-link.net", "up-to-down.net",
         "link-target.net", "link-hub.net", "lootlinks.com", "loot-link.com",
-        "loot-links.com", "free-content.pro", "rentry.co", "controlc.com",
-        "justpaste.it", "paste.ee", "hastebin.com", "dpaste.org"
+        "loot-links.com", "free-content.pro"
     )
 
     if is_explicit_cmd:
